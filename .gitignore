@@ -1,0 +1,22 @@
+#env
+.env
+*.env
+# data
+*.pdf
+ebook.py
+Guia_Completo_Kidle.pdf
+tmp.py
+session/
+proximos_passos.txt
+# pycache
+__pycache__/
+*.pyc
+# logs
+logs/
+#pyvenv
+venv/
+venv-kindle/
+# images
+*.png
+*.jpg
+images/
