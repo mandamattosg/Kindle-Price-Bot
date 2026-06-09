@@ -36,6 +36,14 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+def ensure_user(update: Update):
+    user = update.effective_user
+
+    save_user(
+        telegram_id=user.id,
+        username=user.username
+    )
+
 async def error_handler(update, context):
 
     logging.error(
@@ -86,7 +94,6 @@ def build_products_keyboard():
 
     products = get_active_products()
 
-
     keyboard = []
 
     for product in products:
@@ -114,15 +121,12 @@ def build_products_keyboard():
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info(
-    f"Novo usuário: {user.id} (@{user.username})"
-)
-
     user = update.effective_user
 
-    save_user(
-        telegram_id=user.id,
-        username=user.username
+    ensure_user(update)
+
+    logging.info(
+        f"Novo usuário: {user.id} (@{user.username})"
     )
 
     await update.message.reply_text(WELCOME_MESSAGE)
@@ -134,6 +138,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+    ensure_user(update)
+
     await update.message.reply_text(WELCOME_MESSAGE)
 
 
@@ -142,6 +148,8 @@ async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 
 async def kindle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    ensure_user(update)
 
     reply_markup = build_products_keyboard()
 
@@ -156,6 +164,8 @@ async def kindle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    ensure_user(update)
 
     telegram_id = update.effective_user.id
 
@@ -193,7 +203,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += (
             f"✨ {name}\n"
             f"💵 Último preço: {price_text}\n"
-            f"⏱️ Desde: {created_at[:10]}\n\n"
+            f"⏱️ Desde: {created_at.strftime('%d/%m/%Y')}\n\n"
         )
 
     await update.message.reply_text(message)
@@ -204,6 +214,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 
 async def remover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    
+    ensure_user(update)
 
     telegram_id = update.effective_user.id
 
@@ -254,6 +266,8 @@ async def remover(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+    ensure_user(update)
+
     await update.message.reply_text(WELCOME_MESSAGE)
 
 
@@ -262,6 +276,8 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    ensure_user(update)
 
     query = update.callback_query
 
@@ -313,7 +329,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text(
             f"✅ Beleza! Vou te avisar quando o preço do "
-            f"{product_name} baixar. Enquanto isso, você pode acompanhar o preço atual usando o comando /status."
+            f"{product_name} baixar. Enquanto isso, você pode acompanhar o preço atual usando o comando /status.\n\n"
+            "Não se esqueça de ativar as notificações do Telegram para não perder nenhuma oferta!"
         )
 
         logging.info(

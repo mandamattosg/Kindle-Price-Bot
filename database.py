@@ -1,91 +1,95 @@
-import sqlite3
+﻿from dotenv import load_dotenv
+import os
+import psycopg
+
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
-DB_NAME = "kindle_bot.db"
+def get_connection():
+    return psycopg.connect(DATABASE_URL)
 
-def add_product(asin, name, color):
+
+def add_product(asin, name, color, display_order):
     conn = get_connection()
     cursor = conn.cursor()
 
-
     cursor.execute("""
-    INSERT INTO products (asin, name, color)
-    VALUES (?, ?, ?)
-    """, (asin, name, color))
+        INSERT INTO products (
+            asin,
+            name,
+            color,
+            display_order
+        )
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (asin) DO NOTHING
+    """, (asin, name, color, display_order))
 
     conn.commit()
     conn.close()
 
     print(f"✅ Produto '{name}' adicionado")
 
-def get_connection():
-    return sqlite3.connect(DB_NAME)
-
-
 def create_tables():
     conn = get_connection()
     cursor = conn.cursor()
 
-    # tabela de produtos
-    # cursor.execute("""
-    # CREATE TABLE IF NOT EXISTS products (
-    #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    #     asin TEXT UNIQUE NOT NULL,
-    #     name TEXT NOT NULL,
-    #     color TEXT,
-    #     active INTEGER DEFAULT 1,
-    #     created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    # )
-    # """)
+    cursor.execute("""
+CREATE TABLE IF NOT EXISTS products (
+    id SERIAL PRIMARY KEY,
+    asin TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    color TEXT,
+    active INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    display_order INTEGER DEFAULT 0
+)
+""")
 
-    # histórico de preços
-    # cursor.execute("""
-    # CREATE TABLE IF NOT EXISTS price_history (
-    #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    #     product_id INTEGER NOT NULL,
-    #     price REAL NOT NULL,
-    #     captured_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    cursor.execute("""
+CREATE TABLE IF NOT EXISTS price_history (
+    id SERIAL PRIMARY KEY,
+    product_id INTEGER NOT NULL,
+    price NUMERIC(10,2) NOT NULL,
+    captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(product_id) REFERENCES products(id)
+)
+""")
 
-    #     FOREIGN KEY(product_id) REFERENCES products(id)
-    # )
-    # """)
-
-    # tabela de usuarios 
-    # cursor.execute("""CREATE TABLE users (
-    # id INTEGER PRIMARY KEY AUTOINCREMENT,
-    # telegram_id TEXT NOT NULL UNIQUE,
-    # username TEXT,
-    # created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    # );""")
+    cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    telegram_id TEXT NOT NULL UNIQUE,
+    username TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
 
     cursor.execute("""
 CREATE TABLE IF NOT EXISTS user_products (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-
+    id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL,
     product_id INTEGER NOT NULL,
-
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
     FOREIGN KEY(user_id) REFERENCES users(id),
     FOREIGN KEY(product_id) REFERENCES products(id),
-
     UNIQUE(user_id, product_id)
 )
 """)
-    
+
     conn.commit()
     conn.close()
 
-def get_user_by_telegram_id(telegram_id):
 
+def get_user_by_telegram_id(telegram_id):
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
         SELECT id, telegram_id, username
         FROM users
-        WHERE telegram_id = ?
+        WHERE telegram_id = %s
     """, (str(telegram_id),))
 
     row = cursor.fetchone()
@@ -94,8 +98,8 @@ def get_user_by_telegram_id(telegram_id):
 
     return row
 
-def add_user_product(telegram_id, product_id):
 
+def add_user_product(telegram_id, product_id):
     user = get_user_by_telegram_id(telegram_id)
 
     if not user:
@@ -107,11 +111,12 @@ def add_user_product(telegram_id, product_id):
     cursor = conn.cursor()
 
     cursor.execute("""
-        INSERT OR IGNORE INTO user_products (
+        INSERT INTO user_products (
             user_id,
             product_id
         )
-        VALUES (?, ?)
+        VALUES (%s, %s)
+        ON CONFLICT DO NOTHING
     """, (user_id, product_id))
 
     conn.commit()
@@ -122,8 +127,8 @@ def add_user_product(telegram_id, product_id):
 
     return was_added
 
-def get_users_by_product(product_id):
 
+def get_users_by_product(product_id):
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -134,7 +139,7 @@ def get_users_by_product(product_id):
         JOIN users
             ON users.id = user_products.user_id
 
-        WHERE user_products.product_id = ?
+        WHERE user_products.product_id = %s
     """, (product_id,))
 
     rows = cursor.fetchall()
@@ -143,6 +148,7 @@ def get_users_by_product(product_id):
 
     return rows
 
+
 def get_product_by_id(product_id):
     conn = get_connection()
     cursor = conn.cursor()
@@ -150,7 +156,7 @@ def get_product_by_id(product_id):
     cursor.execute("""
         SELECT id, asin, name, color
         FROM products
-        WHERE id = ?
+        WHERE id = %s
     """, (product_id,))
 
     row = cursor.fetchone()
@@ -158,6 +164,7 @@ def get_product_by_id(product_id):
     conn.close()
 
     return row
+
 
 def get_active_products():
     conn = get_connection()
@@ -176,8 +183,8 @@ def get_active_products():
 
     return products
 
-def get_user_products(telegram_id):
 
+def get_user_products(telegram_id):
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -196,7 +203,7 @@ def get_user_products(telegram_id):
         JOIN products
             ON products.id = user_products.product_id
 
-        WHERE users.telegram_id = ?
+        WHERE users.telegram_id = %s
     """, (str(telegram_id),))
 
     rows = cursor.fetchall()
@@ -205,8 +212,8 @@ def get_user_products(telegram_id):
 
     return rows
 
-def remove_user_product(telegram_id, product_id):
 
+def remove_user_product(telegram_id, product_id):
     user = get_user_by_telegram_id(telegram_id)
 
     if not user:
@@ -219,12 +226,13 @@ def remove_user_product(telegram_id, product_id):
 
     cursor.execute("""
         DELETE FROM user_products
-        WHERE user_id = ?
-        AND product_id = ?
+        WHERE user_id = %s
+        AND product_id = %s
     """, (user_id, product_id))
 
     conn.commit()
     conn.close()
+
 
 def save_price(product_id, price):
     conn = get_connection()
@@ -232,7 +240,7 @@ def save_price(product_id, price):
 
     cursor.execute("""
     INSERT INTO price_history (product_id, price)
-    VALUES (?, ?)
+    VALUES (%s, %s)
     """, (product_id, price))
 
     conn.commit()
@@ -240,16 +248,16 @@ def save_price(product_id, price):
 
 
 def save_user(telegram_id, username):
-
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
-        INSERT OR IGNORE INTO users (
+        INSERT INTO users (
             telegram_id,
             username
         )
-        VALUES (?, ?)
+        VALUES (%s, %s)
+        ON CONFLICT (telegram_id) DO NOTHING
     """, (str(telegram_id), username))
 
     conn.commit()
@@ -257,14 +265,13 @@ def save_user(telegram_id, username):
 
 
 def get_latest_price(product_id):
-
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
         SELECT price
         FROM price_history
-        WHERE product_id = ?
+        WHERE product_id = %s
         ORDER BY id DESC
         LIMIT 1
     """, (product_id,))
@@ -274,16 +281,16 @@ def get_latest_price(product_id):
     conn.close()
 
     return row[0] if row else None
+
 
 def get_last_price(product_id):
-
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
         SELECT price
         FROM price_history
-        WHERE product_id = ?
+        WHERE product_id = %s
         ORDER BY id DESC
         LIMIT 1
     """, (product_id,))
@@ -294,8 +301,8 @@ def get_last_price(product_id):
 
     return row[0] if row else None
 
-def get_all_users():
 
+def get_all_users():
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -310,24 +317,15 @@ def get_all_users():
 
     return rows
 
+
 def delete_old_prices():
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
         DELETE FROM price_history
-        WHERE captured_at < datetime('now', '-90 day')
+        WHERE captured_at < NOW() - INTERVAL '90 days'
     """)
 
     conn.commit()
     conn.close()
-
-# if __name__ == "__main__":
-#     create_tables()
-#     #print("✅ Banco e tabelas criados com sucesso")
-#     #add_product(
-#     #    "B0FBSC6CPR",
-#     #    "Kindle Scribe 32GB Sem Luz Frontal",
-#     #    "Grafite"
-#     #)
-#     get_active_products()
