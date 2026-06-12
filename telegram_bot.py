@@ -330,7 +330,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             f"✅ Beleza! Vou te avisar quando o preço do "
             f"{product_name} baixar. Enquanto isso, você pode acompanhar o preço atual usando o comando /status.\n\n"
-            "Não se esqueça de ativar as notificações do Telegram para não perder nenhuma oferta!"
+            "🔔 Não se esqueça de ativar as notificações do Telegram para não perder nenhuma oferta!"
         )
 
         logging.info(
