@@ -39,6 +39,13 @@ logging.basicConfig(
 def ensure_user(update: Update):
     user = update.effective_user
 
+    if user is None:
+        logging.warning(
+            "ensure_user chamado sem effective_user: %s",
+            update.to_dict()
+        )
+        return
+
     save_user(
         telegram_id=user.id,
         username=user.username
