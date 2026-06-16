@@ -292,9 +292,16 @@ async def remover(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.warning(
+        "unknown_message chamado:\n%s",
+        update.to_dict()
+    )
 
+    if update.message is None:
+        return
+    
     ensure_user(update)
-
+    
     await update.message.reply_text(WELCOME_MESSAGE)
 
 
