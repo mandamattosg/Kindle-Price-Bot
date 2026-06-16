@@ -13,6 +13,14 @@ from telegram.ext import (
     filters
 )
 
+import httpx
+import httpcore
+
+from telegram.error import (
+    NetworkError,
+    TimedOut
+)
+
 import logging
 import traceback
 from notifications import send_admin_alert
@@ -53,18 +61,30 @@ def ensure_user(update: Update):
 
 async def error_handler(update, context):
 
+    error = context.error
+
+    # Erros temporários de rede: apenas registra no log
+    if isinstance(
+        error,
+        (
+            httpx.ReadError,
+            httpcore.ReadError
+        )
+    ):
+        logging.warning("Erro temporário de rede: %s", error)
+        return
+
     logging.error(
         "❌ Erro no kindle bot",
-        exc_info=context.error
+        exc_info=error
     )
 
     try:
-
         error_text = "".join(
             traceback.format_exception(
-                type(context.error),
-                context.error,
-                context.error.__traceback__
+                type(error),
+                error,
+                error.__traceback__
             )
         )
 
