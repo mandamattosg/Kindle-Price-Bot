@@ -234,18 +234,36 @@ def remove_user_product(telegram_id, product_id):
     conn.close()
 
 
+# def save_price(product_id, price):
+#     conn = get_connection()
+#     cursor = conn.cursor()
+
+#     cursor.execute("""
+#     INSERT INTO price_history (product_id, price)
+#     VALUES (%s, %s)
+#     """, (product_id, price))
+
+#     conn.commit()
+#     conn.close()
 def save_price(product_id, price):
+    print(f"💾 Salvando no banco: product_id={product_id}, price={price}")
+
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
-    INSERT INTO price_history (product_id, price)
-    VALUES (%s, %s)
+        INSERT INTO price_history (product_id, price)
+        VALUES (%s, %s)
     """, (product_id, price))
 
-    conn.commit()
-    conn.close()
+    print(f"Rows inseridas: {cursor.rowcount}")
 
+    conn.commit()
+
+    cursor.execute("SELECT currval('price_history_id_seq')")
+    print(f"Novo ID: {cursor.fetchone()[0]}")
+
+    conn.close()
 
 def save_user(telegram_id, username):
     conn = get_connection()
