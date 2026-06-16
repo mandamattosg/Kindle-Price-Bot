@@ -292,10 +292,11 @@ async def remover(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.warning(
-        "unknown_message chamado:\n%s",
-        update.to_dict()
-    )
+    if update.effective_chat is None:
+        return
+
+    if update.effective_chat.type != "private":
+        return
 
     if update.message is None:
         return
