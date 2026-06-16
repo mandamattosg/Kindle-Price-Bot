@@ -1,6 +1,7 @@
 ﻿from dotenv import load_dotenv
 import os
 import psycopg
+from dataclasses import dataclass
 
 load_dotenv()
 
@@ -51,7 +52,8 @@ CREATE TABLE IF NOT EXISTS products (
 CREATE TABLE IF NOT EXISTS price_history (
     id SERIAL PRIMARY KEY,
     product_id INTEGER NOT NULL,
-    price NUMERIC(10,2) NOT NULL,
+    public_price NUMERIC(10,2),
+    prime_price NUMERIC(10,2),
     captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(product_id) REFERENCES products(id)
 )
@@ -234,17 +236,38 @@ def remove_user_product(telegram_id, product_id):
     conn.close()
 
 
-def save_price(product_id, price):
+@dataclass
+class LastPrices:
+    public_price: float | None
+    prime_price: float | None
+
+
+def save_prices(product_id, public_price=None, prime_price=None):
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
-    INSERT INTO price_history (product_id, price)
-    VALUES (%s, %s)
-    """, (product_id, price))
+        INSERT INTO price_history (
+            product_id,
+            public_price,
+            prime_price
+        )
+        VALUES (%s, %s, %s)
+    """, (
+        product_id,
+        public_price,
+        prime_price
+    ))
 
     conn.commit()
     conn.close()
+
+
+def save_price(product_id, price=None, public_price=None, prime_price=None):
+    if price is not None:
+        public_price = price
+
+    return save_prices(product_id, public_price=public_price, prime_price=prime_price)
 
 
 def save_user(telegram_id, username):
@@ -269,7 +292,7 @@ def get_latest_price(product_id):
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT price
+        SELECT public_price, prime_price
         FROM price_history
         WHERE product_id = %s
         ORDER BY id DESC
@@ -280,15 +303,21 @@ def get_latest_price(product_id):
 
     conn.close()
 
-    return row[0] if row else None
+    if not row:
+        return None
+
+    public_price, prime_price = row
+    return prime_price if prime_price is not None else public_price
 
 
-def get_last_price(product_id):
+def get_last_prices(product_id):
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT price
+        SELECT
+            public_price,
+            prime_price
         FROM price_history
         WHERE product_id = %s
         ORDER BY id DESC
@@ -299,7 +328,20 @@ def get_last_price(product_id):
 
     conn.close()
 
-    return row[0] if row else None
+    if not row:
+        return None
+
+    return LastPrices(
+        public_price=row[0],
+        prime_price=row[1]
+    )
+
+
+def get_last_price(product_id):
+    last_prices = get_last_prices(product_id)
+    if last_prices is None:
+        return None
+    return last_prices.prime_price if last_prices.prime_price is not None else last_prices.public_price
 
 
 def get_all_users():
@@ -329,3 +371,6 @@ def delete_old_prices():
 
     conn.commit()
     conn.close()
+
+
+    

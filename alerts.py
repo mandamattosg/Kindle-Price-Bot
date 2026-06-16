@@ -22,7 +22,7 @@ def build_affiliate_link(asin: str) -> str:
     return f"https://www.amazon.com.br/dp/{asin}?tag={AFILIADO_TAG}"
 
 
-def send_price_alert(product_id, old_price, new_price):
+def send_price_alert(product_id, old_price, new_price, prime=False):
 
 
     product = get_product_by_id(product_id)
@@ -40,11 +40,13 @@ def send_price_alert(product_id, old_price, new_price):
 
     users = get_users_by_product(product_id)
 
+    prime_tag = " (Oferta Prime)" if prime else ""
+
     message = (
         f"🚨 KINDLE EM PROMOÇÃO AGORA!!\n\n"
         f"📖 {product_name}\n\n"
-        f"💸 De: R$ {old_price:.2f}\n"
-        f"🔥 Por: R$ {new_price:.2f}\n\n"
+        f"💸 De: R$ {old_price:.2f}{prime_tag}\n"
+        f"🔥 Por: R$ {new_price:.2f}{prime_tag}\n\n"
         f"⚠️ O preço pode subir novamente a qualquer momento."
     )
 

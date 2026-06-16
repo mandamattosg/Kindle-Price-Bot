@@ -20,3 +20,5 @@ venv-kindle/
 *.png
 *.jpg
 images/
+*.json
+*.db
