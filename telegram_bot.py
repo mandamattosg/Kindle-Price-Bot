@@ -218,18 +218,31 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "Básico" in name and color:
             name += f" — {color}"
 
-        price = get_latest_price(product_id)
+        last_prices = get_last_prices(product_id)
 
+        if last_prices is None:
+            price_text = "indisponível"
+        else:
+            public_price = last_prices.public_price
+            prime_price = last_prices.prime_price
 
-        price_text = (
-            f"R$ {price:.2f}"
-            if price is not None
-            else "indisponível"
-        )
+            if public_price is None and prime_price is None:
+                price_text = "indisponível"
+            elif public_price is None:
+                price_text = f"Prime: R$ {prime_price:.2f}"
+            elif prime_price is None:
+                price_text = f"Público: R$ {public_price:.2f}"
+            elif public_price == prime_price:
+                price_text = f"R$ {public_price:.2f}"
+            else:
+                price_text = (
+                    f"Público: R$ {public_price:.2f}\n"
+                    f"Prime: R$ {prime_price:.2f}"
+                )
 
         message += (
             f"✨ {name}\n"
-            f"💵 Último preço: {price_text}\n"
+            f"💵 Último preço:\n{price_text}\n"
             f"⏱️ Desde: {created_at.strftime('%d/%m/%Y')}\n\n"
         )
 
