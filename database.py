@@ -368,7 +368,7 @@ def delete_old_prices():
 
     cursor.execute("""
         DELETE FROM price_history
-        WHERE captured_at < NOW() - INTERVAL '90 days'
+        WHERE captured_at < NOW() - INTERVAL '60 days'
     """)
 
     conn.commit()
