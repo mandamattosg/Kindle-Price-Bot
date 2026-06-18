@@ -32,6 +32,7 @@ import os
 from database import (
     get_active_products,
     save_user,
+    get_user_by_telegram_id,
     add_user_product,
     get_user_products,
     get_last_prices,
@@ -587,7 +588,16 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         product_id = int(data.split("_")[1])
 
-        user_id = query.from_user.id
+        telegram_id = query.from_user.id
+
+        user = get_user_by_telegram_id(telegram_id)
+        if not user:
+            await query.message.reply_text(
+                "❌ Não foi possível identificar seu usuário. Tente /start novamente."
+            )
+            return
+
+        internal_user_id = user[0]
 
         products = get_active_products()
 
@@ -608,7 +618,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         _, _, product_name, color = selected_product
 
-        was_added = add_user_product(user_id, product_id)
+        was_added = add_user_product(telegram_id, product_id)
 
         if not was_added:
 
@@ -633,7 +643,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             promotion_baseline = get_product_promotion_baseline(product_id)
 
         initialize_user_product_state(
-            user_id,
+            internal_user_id,
             product_id,
             last_seen_price=current_best_price,
             last_notified_price=None
@@ -645,12 +655,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 promotion_baseline,
                 current_best_price,
                 prime=current_best_is_prime,
-                target_users=[(user_id, user_id)]
+                target_users=[(internal_user_id, telegram_id)]
             )
 
             if alert_sent:
                 upsert_user_product_state(
-                    user_id,
+                    internal_user_id,
                     product_id,
                     last_seen_price=current_best_price,
                     last_notified_price=current_best_price
@@ -666,7 +676,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         logging.info(
-        f"Usuário {user_id} começou monitorar "
+        f"Usuário {telegram_id} começou monitorar "
         f"{product_name}"
         )
 
