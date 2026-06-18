@@ -28,6 +28,7 @@ from notifications import send_admin_alert
 from dotenv import load_dotenv
 import os
 
+
 from database import (
     get_active_products,
     save_user,
@@ -84,7 +85,8 @@ async def error_handler(update, context):
         error,
         (
             httpx.ReadError,
-            httpcore.ReadError
+            httpcore.ReadError,
+            TimedOut
         )
     ):
         logging.warning("Erro temporário de rede: %s", error)
