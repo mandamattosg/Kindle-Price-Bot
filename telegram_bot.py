@@ -35,6 +35,7 @@ from database import (
     add_user_product,
     get_user_products,
     get_last_prices,
+    get_product_price_history,
     initialize_user_product_state,
     upsert_user_product_state,
     get_product_promotion_baseline,
@@ -282,12 +283,11 @@ def parse_price_text(text: str):
     if cleaned in {"-", "nenhum", "0", "0,00", "0.00"}:
         return None
 
-    # remover símbolo e espaços
     cleaned = cleaned.replace("r$", "").replace(" ", "")
 
-    # normalizar separadores: remover pontos de milhar e transformar vírgula decimal em ponto
-    cleaned = cleaned.replace(".", "")
-    cleaned = cleaned.replace(",", ".")
+    if "," in cleaned:
+        cleaned = cleaned.replace(".", "")
+        cleaned = cleaned.replace(",", ".")
 
     try:
         return float(cleaned)
@@ -453,22 +453,36 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if last_prices is None:
             price_text = "indisponível"
         else:
+            # Fallback: if latest row has None, use the most recent registered
+            # value for that specific field in price history.
+            history = get_product_price_history(product_id, limit=100)
+
             public_price = last_prices.public_price
             prime_price = last_prices.prime_price
 
+            if public_price is None:
+                for hist_public, _ in history:
+                    if hist_public is not None:
+                        public_price = hist_public
+                        break
+
+            if prime_price is None:
+                for _, hist_prime in history:
+                    if hist_prime is not None:
+                        prime_price = hist_prime
+                        break
+
+            # Display rule:
+            # - default: show public as generic price (without label)
+            # - exception: if prime is lower than public, show prime value
             if public_price is None and prime_price is None:
                 price_text = "indisponível"
             elif public_price is None:
-                price_text = f"Prime: R$ {prime_price:.2f}"
-            elif prime_price is None:
-                price_text = f"Público: R$ {public_price:.2f}"
-            elif public_price == prime_price:
-                price_text = f"R$ {public_price:.2f}"
+                price_text = f"R$ {prime_price:.2f}"
+            elif prime_price is not None and prime_price < public_price:
+                price_text = f"R$ {prime_price:.2f}"
             else:
-                price_text = (
-                    f"Público: R$ {public_price:.2f}\n"
-                    f"Prime: R$ {prime_price:.2f}"
-                )
+                price_text = f"R$ {public_price:.2f}"
 
         message += (
             f"✨ {name}\n"
