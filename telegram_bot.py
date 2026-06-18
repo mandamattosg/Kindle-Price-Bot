@@ -282,11 +282,12 @@ def parse_price_text(text: str):
     if cleaned in {"-", "nenhum", "0", "0,00", "0.00"}:
         return None
 
+    # remover símbolo e espaços
     cleaned = cleaned.replace("r$", "").replace(" ", "")
 
-    if "," in cleaned:
-        cleaned = cleaned.replace(".", "")
-        cleaned = cleaned.replace(",", ".")
+    # normalizar separadores: remover pontos de milhar e transformar vírgula decimal em ponto
+    cleaned = cleaned.replace(".", "")
+    cleaned = cleaned.replace(",", ".")
 
     try:
         return float(cleaned)

@@ -405,7 +405,9 @@ def get_product_promotion_baseline_best_price(product_id, current_best_price):
         previous_price = get_best_price(public_price, prime_price)
         if previous_price is None:
             continue
-        if previous_price != current_best_price:
+        # only consider a previous baseline if it is higher than the current price
+        # (i.e. the current price is an actual drop / promotion)
+        if previous_price > current_best_price:
             return previous_price
 
     return None
@@ -424,7 +426,9 @@ def get_product_promotion_baseline(product_id):
         previous_best = get_best_price(public_price, prime_price)
         if previous_best is None:
             continue
-        if previous_best != current_best:
+        # only return a baseline when the previous best was higher than current
+        # meaning the current_best is a drop compared to that previous price
+        if previous_best > current_best:
             return previous_best
 
     return None

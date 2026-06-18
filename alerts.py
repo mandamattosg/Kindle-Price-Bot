@@ -47,9 +47,9 @@ def send_price_alert(product_id, old_price, new_price, prime=False, target_users
     message = (
         f"🚨 KINDLE EM PROMOÇÃO AGORA!!\n\n"
         f"📖 {product_name}\n\n"
-        f"💸 De: R$ {old_price:.2f}{prime_tag}\n"
+        f"💸 De: R$ {old_price:.2f}\n"
         f"🔥 Por: R$ {new_price:.2f}{prime_tag}\n\n"
-        f"⚠️ O preço pode subir novamente a qualquer momento."
+        f"O preço pode subir novamente a qualquer momento."
     )
 
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
