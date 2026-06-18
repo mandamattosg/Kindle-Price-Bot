@@ -22,8 +22,7 @@ def build_affiliate_link(asin: str) -> str:
     return f"https://www.amazon.com.br/dp/{asin}?tag={AFILIADO_TAG}"
 
 
-def send_price_alert(product_id, old_price, new_price, prime=False):
-
+def send_price_alert(product_id, old_price, new_price, prime=False, target_users=None):
 
     product = get_product_by_id(product_id)
 
@@ -38,7 +37,10 @@ def send_price_alert(product_id, old_price, new_price, prime=False):
 
     affiliate_link = build_affiliate_link(asin)
 
-    users = get_users_by_product(product_id)
+    if target_users is None:
+        users = get_users_by_product(product_id)
+    else:
+        users = target_users
 
     prime_tag = " (Oferta Prime)" if prime else ""
 
@@ -65,15 +67,23 @@ def send_price_alert(product_id, old_price, new_price, prime=False):
         ]
     }
 
+    success = True
+
     for user in users:
 
-        telegram_id = user[0]
+        if isinstance(user, tuple):
+            if len(user) > 1:
+                telegram_id = user[1]
+            else:
+                telegram_id = user[0]
+        else:
+            telegram_id = user
 
         try:
             response = requests.post(
                 url,
                 json={
-                    "chat_id": telegram_id,
+                    "chat_id": str(telegram_id),
                     "text": message,
                     "reply_markup": keyboard
                 },
@@ -82,11 +92,14 @@ def send_price_alert(product_id, old_price, new_price, prime=False):
 
             if response.status_code != 200:
                 print(f"❌ Telegram erro {response.status_code}: {response.text}")
-
-            logging.info(
-            f"Alerta enviado para "
-            f"{telegram_id}"
-            )
+                success = False
+            else:
+                logging.info(
+                    f"Alerta enviado para {telegram_id}"
+                )
 
         except Exception as e:
             print(f"❌ Erro enviando alerta: {e}")
+            success = False
+
+    return success

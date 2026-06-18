@@ -33,9 +33,14 @@ from database import (
     save_user,
     add_user_product,
     get_user_products,
-    get_last_prices
+    get_last_prices,
+    initialize_user_product_state,
+    upsert_user_product_state,
+    get_product_promotion_baseline,
+    get_best_price_info
 )
 
+from alerts import send_price_alert
 from kindle_scraper import process_product, PriceResult
 
 load_dotenv()
@@ -595,7 +600,45 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             return
-        
+
+        last_prices = get_last_prices(product_id)
+        current_best_price = None
+        current_best_is_prime = False
+
+        if last_prices is not None:
+            current_best_price, current_best_is_prime = get_best_price_info(
+                last_prices.public_price,
+                last_prices.prime_price
+            )
+
+        promotion_baseline = None
+        if current_best_price is not None:
+            promotion_baseline = get_product_promotion_baseline(product_id)
+
+        initialize_user_product_state(
+            user_id,
+            product_id,
+            last_seen_price=current_best_price,
+            last_notified_price=None
+        )
+
+        if promotion_baseline is not None and current_best_price is not None:
+            alert_sent = send_price_alert(
+                product_id,
+                promotion_baseline,
+                current_best_price,
+                prime=current_best_is_prime,
+                target_users=[(user_id, user_id)]
+            )
+
+            if alert_sent:
+                upsert_user_product_state(
+                    user_id,
+                    product_id,
+                    last_seen_price=current_best_price,
+                    last_notified_price=current_best_price
+                )
+
         if "Básico" in product_name and color:
             product_name += f" — {color}"
 
