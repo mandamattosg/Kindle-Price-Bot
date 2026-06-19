@@ -650,7 +650,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             promotion_baseline = get_product_promotion_baseline(product_id)
 
         initialize_user_product_state(
-            internal_user_id,
+            telegram_id,
             product_id,
             last_seen_price=current_best_price,
             last_notified_price=None

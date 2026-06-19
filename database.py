@@ -414,7 +414,7 @@ def get_product_promotion_baseline_best_price(product_id, current_best_price):
 
 
 def get_product_promotion_baseline(product_id):
-    rows = get_product_price_history(product_id, limit=50)
+    rows = get_product_price_history(product_id, limit=720)
     if not rows:
         return None
 
