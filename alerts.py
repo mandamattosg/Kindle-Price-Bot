@@ -1,11 +1,11 @@
 import logging
-
+import time
 import requests
 import os
 from dotenv import load_dotenv
 
 from database import get_users_by_product, get_product_by_id
-import logging
+from notifications import send_admin_alert
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +28,7 @@ def send_price_alert(product_id, old_price, new_price, prime=False, target_users
 
     if not product:
         print(f"❌ Produto {product_id} não encontrado")
-        return
+        return False
 
     asin = product[1]
     product_name = product[2]
@@ -68,6 +68,8 @@ def send_price_alert(product_id, old_price, new_price, prime=False, target_users
     }
 
     success = True
+    max_attempts = 2
+    retry_delay_seconds = 2
 
     for user in users:
 
@@ -79,27 +81,52 @@ def send_price_alert(product_id, old_price, new_price, prime=False, target_users
         else:
             telegram_id = user
 
-        try:
-            response = requests.post(
-                url,
-                json={
-                    "chat_id": str(telegram_id),
-                    "text": message,
-                    "reply_markup": keyboard
-                },
-                timeout=15
-            )
+        delivered = False
+        last_error = None
 
-            if response.status_code != 200:
-                print(f"❌ Telegram erro {response.status_code}: {response.text}")
-                success = False
-            else:
-                logging.info(
-                    f"Alerta enviado para {telegram_id}"
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = requests.post(
+                    url,
+                    json={
+                        "chat_id": str(telegram_id),
+                        "text": message,
+                        "reply_markup": keyboard
+                    },
+                    timeout=15
                 )
 
-        except Exception as e:
-            print(f"❌ Erro enviando alerta: {e}")
+                if response.status_code == 200:
+                    logging.info(f"Alerta enviado para {telegram_id}")
+                    delivered = True
+                    break
+
+                last_error = f"HTTP {response.status_code}: {response.text}"
+                logging.warning(
+                    f"Falha ao enviar alerta para {telegram_id} "
+                    f"(tentativa {attempt}/{max_attempts}): {last_error}"
+                )
+
+            except Exception as e:
+                last_error = str(e)
+                logging.warning(
+                    f"Erro ao enviar alerta para {telegram_id} "
+                    f"(tentativa {attempt}/{max_attempts}): {last_error}"
+                )
+
+            if attempt < max_attempts:
+                time.sleep(retry_delay_seconds)
+
+        if not delivered:
             success = False
+            alert_type = "Prime" if prime else "Public"
+            send_admin_alert(
+                f"⚠️ Warning envio Telegram\n\n"
+                f"Usuário: {telegram_id}\n"
+                f"Produto: {product_name}\n"
+                f"Tipo: {alert_type}\n"
+                f"Tentativas: {max_attempts}\n"
+                f"Erro final: {(last_error or 'desconhecido')[:500]}"
+            )
 
     return success
