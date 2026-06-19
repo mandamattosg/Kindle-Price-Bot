@@ -88,10 +88,17 @@ async def error_handler(update, context):
         (
             httpx.ReadError,
             httpcore.ReadError,
-            TimedOut
+            TimedOut,
+            NetworkError
         )
     ):
         logging.warning("Erro temporário de rede: %s", error)
+
+        send_admin_alert(
+            "⚠️ Erro temporário de rede\n"
+            f"{error_text[:3000]}"
+        )
+        
         return
 
     logging.error(
