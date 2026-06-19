@@ -89,12 +89,29 @@ CREATE TABLE IF NOT EXISTS user_product_state (
     product_id INTEGER NOT NULL,
     last_seen_price NUMERIC(10,2),
     last_notified_price NUMERIC(10,2),
+    pending_alert_old_price NUMERIC(10,2),
+    pending_alert_new_price NUMERIC(10,2),
+    pending_alert_prime BOOLEAN,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id),
     FOREIGN KEY(product_id) REFERENCES products(id),
     UNIQUE(user_id, product_id)
 )
 """)
+
+    # Backward-compatible migration for existing databases.
+    cursor.execute("""
+        ALTER TABLE user_product_state
+        ADD COLUMN IF NOT EXISTS pending_alert_old_price NUMERIC(10,2)
+    """)
+    cursor.execute("""
+        ALTER TABLE user_product_state
+        ADD COLUMN IF NOT EXISTS pending_alert_new_price NUMERIC(10,2)
+    """)
+    cursor.execute("""
+        ALTER TABLE user_product_state
+        ADD COLUMN IF NOT EXISTS pending_alert_prime BOOLEAN
+    """)
 
     conn.commit()
     conn.close()
@@ -238,7 +255,10 @@ def get_user_product_state(user_id, product_id):
     cursor.execute("""
         SELECT
             last_seen_price,
-            last_notified_price
+            last_notified_price,
+            pending_alert_old_price,
+            pending_alert_new_price,
+            pending_alert_prime
         FROM user_product_state
         WHERE user_id = %s
           AND product_id = %s
@@ -259,7 +279,10 @@ def get_user_product_states_by_product(product_id):
             user_products.user_id,
             users.telegram_id,
             user_product_state.last_seen_price,
-            user_product_state.last_notified_price
+            user_product_state.last_notified_price,
+            user_product_state.pending_alert_old_price,
+            user_product_state.pending_alert_new_price,
+            user_product_state.pending_alert_prime
         FROM user_products
         JOIN users
             ON users.id = user_products.user_id
@@ -275,7 +298,15 @@ def get_user_product_states_by_product(product_id):
     return rows
 
 
-def upsert_user_product_state(user_id, product_id, last_seen_price=None, last_notified_price=None):
+def upsert_user_product_state(
+    user_id,
+    product_id,
+    last_seen_price=None,
+    last_notified_price=None,
+    pending_alert_old_price=None,
+    pending_alert_new_price=None,
+    pending_alert_prime=None
+):
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -284,18 +315,27 @@ def upsert_user_product_state(user_id, product_id, last_seen_price=None, last_no
             user_id,
             product_id,
             last_seen_price,
-            last_notified_price
-        ) VALUES (%s, %s, %s, %s)
+            last_notified_price,
+            pending_alert_old_price,
+            pending_alert_new_price,
+            pending_alert_prime
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (user_id, product_id) DO UPDATE
         SET
             last_seen_price = EXCLUDED.last_seen_price,
             last_notified_price = EXCLUDED.last_notified_price,
+            pending_alert_old_price = EXCLUDED.pending_alert_old_price,
+            pending_alert_new_price = EXCLUDED.pending_alert_new_price,
+            pending_alert_prime = EXCLUDED.pending_alert_prime,
             updated_at = CURRENT_TIMESTAMP
     """, (
         user_id,
         product_id,
         last_seen_price,
-        last_notified_price
+        last_notified_price,
+        pending_alert_old_price,
+        pending_alert_new_price,
+        pending_alert_prime
     ))
 
     conn.commit()
