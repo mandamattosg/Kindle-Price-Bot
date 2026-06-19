@@ -228,7 +228,8 @@ def get_user_products(telegram_id):
             products.name,
             products.color,
             user_products.created_at,
-            products.id
+            products.id,
+            products.asin
 
         FROM user_products
 

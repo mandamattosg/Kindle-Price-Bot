@@ -44,6 +44,7 @@ from database import (
 )
 
 from alerts import send_price_alert
+from alerts import build_affiliate_link
 from kindle_scraper import process_product, PriceResult
 
 load_dotenv()
@@ -447,14 +448,24 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     message = "📊 Seus monitoramentos:\n\n"
+    links_keyboard = []
 
     for product in products:
 
-        name, color, created_at, product_id = product
+        name, color, created_at, product_id, asin = product
+        display_name = name
 
         # só mostra cor no Kindle básico
-        if "Básico" in name and color:
-            name += f" — {color}"
+        if "Básico" in display_name and color:
+            display_name += f" — {color}"
+
+        affiliate_link = build_affiliate_link(asin)
+        links_keyboard.append([
+            InlineKeyboardButton(
+                text=f"🛒 {display_name}",
+                url=affiliate_link
+            )
+        ])
 
         last_prices = get_last_prices(product_id)
 
@@ -493,12 +504,15 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 price_text = f"R$ {public_price:.2f}"
 
         message += (
-            f"✨ {name}\n"
+            f"✨ {display_name}\n"
             f"💵 Último preço:\n{price_text}\n"
             f"⏱️ Desde: {created_at.strftime('%d/%m/%Y')}\n\n"
         )
 
-    await update.message.reply_text(message)
+    await update.message.reply_text(
+        message,
+        reply_markup=InlineKeyboardMarkup(links_keyboard)
+    )
 
 
 # =========================
@@ -526,7 +540,7 @@ async def remover(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for product in products:
 
-        name, color, created_at, product_id = product
+        name, color, created_at, product_id, asin = product
 
         # só mostra cor no Kindle básico
         if "Básico" in name and color:
