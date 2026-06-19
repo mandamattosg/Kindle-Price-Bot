@@ -39,7 +39,7 @@ from database import (
     get_product_price_history,
     initialize_user_product_state,
     upsert_user_product_state,
-    get_product_promotion_baseline,
+    get_active_product_promotion_state,
     get_best_price_info
 )
 
@@ -659,9 +659,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 last_prices.prime_price
             )
 
-        promotion_baseline = None
-        if current_best_price is not None:
-            promotion_baseline = get_product_promotion_baseline(product_id)
+        promotion_state = get_active_product_promotion_state(product_id)
 
         initialize_user_product_state(
             telegram_id,
@@ -670,12 +668,24 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             last_notified_price=None
         )
 
-        if promotion_baseline is not None and current_best_price is not None:
+        if promotion_state is not None and current_best_price is not None:
+            promotion_old_price, promotion_new_price, promotion_is_prime, _started_at = promotion_state
+
+            if promotion_old_price is None or promotion_new_price is None:
+                promotion_old_price = None
+                promotion_new_price = None
+
+        if (
+            promotion_state is not None
+            and current_best_price is not None
+            and promotion_old_price is not None
+            and promotion_new_price is not None
+        ):
             alert_sent = send_price_alert(
                 product_id,
-                promotion_baseline,
-                current_best_price,
-                prime=current_best_is_prime,
+                float(promotion_old_price),
+                float(promotion_new_price),
+                prime=bool(promotion_is_prime),
                 target_users=[(internal_user_id, telegram_id)]
             )
 

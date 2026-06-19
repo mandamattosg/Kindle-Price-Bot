@@ -99,6 +99,21 @@ CREATE TABLE IF NOT EXISTS user_product_state (
 )
 """)
 
+    cursor.execute("""
+CREATE TABLE IF NOT EXISTS product_promotion_state (
+    id SERIAL PRIMARY KEY,
+    product_id INTEGER NOT NULL UNIQUE,
+    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+    alert_old_price NUMERIC(10,2),
+    alert_new_price NUMERIC(10,2),
+    alert_prime BOOLEAN,
+    started_at TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    ended_at TIMESTAMP,
+    FOREIGN KEY(product_id) REFERENCES products(id)
+)
+""")
+
     # Backward-compatible migration for existing databases.
     cursor.execute("""
         ALTER TABLE user_product_state
@@ -299,6 +314,112 @@ def get_user_product_states_by_product(product_id):
     return rows
 
 
+def ensure_product_promotion_state_table():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+CREATE TABLE IF NOT EXISTS product_promotion_state (
+    id SERIAL PRIMARY KEY,
+    product_id INTEGER NOT NULL UNIQUE,
+    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+    alert_old_price NUMERIC(10,2),
+    alert_new_price NUMERIC(10,2),
+    alert_prime BOOLEAN,
+    started_at TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    ended_at TIMESTAMP,
+    FOREIGN KEY(product_id) REFERENCES products(id)
+)
+""")
+
+    conn.commit()
+    conn.close()
+
+
+def get_active_product_promotion_state(product_id):
+    ensure_product_promotion_state_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            alert_old_price,
+            alert_new_price,
+            alert_prime,
+            started_at
+        FROM product_promotion_state
+        WHERE product_id = %s
+          AND is_active = TRUE
+    """, (product_id,))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    return row
+
+
+def upsert_active_product_promotion_state(product_id, alert_old_price, alert_new_price, alert_prime=False):
+    ensure_product_promotion_state_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO product_promotion_state (
+            product_id,
+            is_active,
+            alert_old_price,
+            alert_new_price,
+            alert_prime,
+            started_at,
+            ended_at
+        ) VALUES (%s, TRUE, %s, %s, %s, CURRENT_TIMESTAMP, NULL)
+        ON CONFLICT (product_id) DO UPDATE
+        SET
+            is_active = TRUE,
+            alert_old_price = EXCLUDED.alert_old_price,
+            alert_new_price = EXCLUDED.alert_new_price,
+            alert_prime = EXCLUDED.alert_prime,
+            started_at = CASE
+                WHEN product_promotion_state.is_active = TRUE
+                THEN product_promotion_state.started_at
+                ELSE CURRENT_TIMESTAMP
+            END,
+            ended_at = NULL,
+            updated_at = CURRENT_TIMESTAMP
+    """, (
+        product_id,
+        alert_old_price,
+        alert_new_price,
+        alert_prime
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def deactivate_product_promotion_state(product_id):
+    ensure_product_promotion_state_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE product_promotion_state
+        SET
+            is_active = FALSE,
+            ended_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE product_id = %s
+          AND is_active = TRUE
+    """, (product_id,))
+
+    conn.commit()
+    conn.close()
+
+
 def upsert_user_product_state(
     user_id,
     product_id,
@@ -469,6 +590,39 @@ def get_product_promotion_baseline(product_id):
             continue
         # only return a baseline when the previous best was higher than current
         # meaning the current_best is a drop compared to that previous price
+        if previous_best > current_best:
+            return previous_best
+
+    return None
+
+
+def get_product_promotion_baseline_recent(product_id, days=7, limit=720):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT public_price, prime_price
+        FROM price_history
+        WHERE product_id = %s
+          AND captured_at >= NOW() - make_interval(days => %s)
+        ORDER BY id DESC
+        LIMIT %s
+    """, (product_id, days, limit))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        return None
+
+    current_best = get_best_price(rows[0][0], rows[0][1])
+    if current_best is None:
+        return None
+
+    for public_price, prime_price in rows[1:]:
+        previous_best = get_best_price(public_price, prime_price)
+        if previous_best is None:
+            continue
         if previous_best > current_best:
             return previous_best
 
