@@ -96,9 +96,9 @@ async def error_handler(update, context):
 
         send_admin_alert(
             "⚠️ Erro temporário de rede\n"
-            f"{error_text[:3000]}"
+            #f"{error_text[:3000]}"
         )
-        
+
         return
 
     logging.error(
