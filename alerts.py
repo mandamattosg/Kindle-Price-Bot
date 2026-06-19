@@ -28,6 +28,11 @@ def send_price_alert(product_id, old_price, new_price, prime=False, target_users
 
     if not product:
         print(f"❌ Produto {product_id} não encontrado")
+        send_admin_alert(
+            "🚨 Produto inexistente em envio de alerta\n\n"
+            f"product_id: {product_id}\n"
+            "Falha ao montar mensagem de alerta porque o produto não foi encontrado no banco."
+        )
         return False
 
     asin = product[1]
