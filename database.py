@@ -773,6 +773,35 @@ def get_last_prices(product_id):
     )
 
 
+def get_last_valid_prices(product_id):
+    """Como get_last_prices, mas para cada campo usa o último registro
+    não-nulo do histórico. Útil como fallback quando o registro mais
+    recente tem public_price ou prime_price NULL."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            (SELECT public_price FROM price_history
+             WHERE product_id = %s AND public_price IS NOT NULL
+             ORDER BY id DESC LIMIT 1) AS public_price,
+            (SELECT prime_price FROM price_history
+             WHERE product_id = %s AND prime_price IS NOT NULL
+             ORDER BY id DESC LIMIT 1) AS prime_price
+    """, (product_id, product_id))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    return LastPrices(
+        public_price=row[0],
+        prime_price=row[1]
+    )
+
+
 def get_last_price(product_id):
     last_prices = get_last_prices(product_id)
     if last_prices is None:
