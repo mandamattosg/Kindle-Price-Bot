@@ -40,7 +40,8 @@ from database import (
     initialize_user_product_state,
     upsert_user_product_state,
     get_active_product_promotion_state,
-    get_best_price_info
+    get_best_price_info,
+    get_report_stats
 )
 
 from alerts import send_price_alert
@@ -146,7 +147,7 @@ def get_welcome_message(update: Update):
     if is_admin_user(update):
         message = message.replace(
             "/ajuda → mostrar esta mensagem novamente",
-            "/ajuda → mostrar esta mensagem novamente\n/manual → registrar preços manualmente (admin)"
+            "/ajuda → mostrar esta mensagem novamente\n/manual → registrar preços manualmente (admin)\n/relatorio → relatório de uso do bot (admin)"
         )
     return message
 
@@ -222,6 +223,33 @@ async def kindle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 Qual Kindle você quer monitorar?",
         reply_markup=reply_markup
     )
+
+
+# =========================
+# RELATORIO (ADMIN)
+# =========================
+
+async def relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_user(update):
+        await update.message.reply_text("⛔ Comando disponível apenas para o administrador.")
+        return
+
+    stats = get_report_stats()
+
+    if not stats:
+        await update.message.reply_text("❌ Não foi possível obter as estatísticas.")
+        return
+
+    top = f"{stats['top_product']} ({stats['top_product_count']} usuário(s))" if stats["top_product"] else "—"
+
+    msg = (
+        "📊 *Relatório do Bot*\n\n"
+        f"👥 Total de usuários: *{stats['total_users']}*\n"
+        f"🔍 Monitorando ao menos 1 Kindle: *{stats['users_monitoring']}*\n"
+        f"🏆 Produto mais monitorado: *{top}*"
+    )
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 # =========================
@@ -771,6 +799,7 @@ def main():
     app.add_handler(CommandHandler("kindle", kindle))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("remover", remover))
+    app.add_handler(CommandHandler("relatorio", relatorio))
 
     manual_handler = ConversationHandler(
         entry_points=[CommandHandler("manual", manual)],

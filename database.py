@@ -825,6 +825,46 @@ def get_all_users():
     return rows
 
 
+def get_report_stats():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            (SELECT COUNT(*) FROM users) AS total_users,
+            (SELECT COUNT(DISTINCT user_id) FROM user_products) AS users_monitoring,
+            (
+                SELECT p.name
+                FROM user_products up
+                JOIN products p ON p.id = up.product_id
+                GROUP BY p.id, p.name
+                ORDER BY COUNT(up.user_id) DESC
+                LIMIT 1
+            ) AS top_product,
+            (
+                SELECT COUNT(up.user_id)
+                FROM user_products up
+                JOIN products p ON p.id = up.product_id
+                GROUP BY p.id
+                ORDER BY COUNT(up.user_id) DESC
+                LIMIT 1
+            ) AS top_product_count
+    """)
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    return {
+        "total_users": row[0],
+        "users_monitoring": row[1],
+        "top_product": row[2],
+        "top_product_count": row[3],
+    }
+
+
 def delete_old_prices():
     conn = get_connection()
     cursor = conn.cursor()
