@@ -114,6 +114,24 @@ CREATE TABLE IF NOT EXISTS product_promotion_state (
 )
 """)
 
+    cursor.execute("""
+CREATE TABLE IF NOT EXISTS alert_approvals (
+    id SERIAL PRIMARY KEY,
+    product_id INTEGER NOT NULL,
+    product_name TEXT NOT NULL,
+    old_price NUMERIC(10,2) NOT NULL,
+    new_price NUMERIC(10,2) NOT NULL,
+    is_prime BOOLEAN NOT NULL DEFAULT FALSE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    decided_at TIMESTAMP,
+    decided_by TEXT,
+    source TEXT,
+    FOREIGN KEY(product_id) REFERENCES products(id),
+    CHECK (status IN ('pending', 'approved', 'rejected'))
+)
+""")
+
     # Backward-compatible migration for existing databases.
     cursor.execute("""
         ALTER TABLE user_product_state
@@ -147,6 +165,176 @@ def get_user_by_telegram_id(telegram_id):
     conn.close()
 
     return row
+
+
+def ensure_alert_approval_table():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+CREATE TABLE IF NOT EXISTS alert_approvals (
+    id SERIAL PRIMARY KEY,
+    product_id INTEGER NOT NULL,
+    product_name TEXT NOT NULL,
+    old_price NUMERIC(10,2) NOT NULL,
+    new_price NUMERIC(10,2) NOT NULL,
+    is_prime BOOLEAN NOT NULL DEFAULT FALSE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    decided_at TIMESTAMP,
+    decided_by TEXT,
+    source TEXT,
+    FOREIGN KEY(product_id) REFERENCES products(id),
+    CHECK (status IN ('pending', 'approved', 'rejected'))
+)
+""")
+
+    conn.commit()
+    conn.close()
+
+
+def create_alert_approval_request(product_id, product_name, old_price, new_price, is_prime=False):
+    ensure_alert_approval_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO alert_approvals (
+            product_id,
+            product_name,
+            old_price,
+            new_price,
+            is_prime,
+            status
+        )
+        VALUES (%s, %s, %s, %s, %s, 'pending')
+        RETURNING id
+    """, (
+        product_id,
+        product_name,
+        old_price,
+        new_price,
+        bool(is_prime)
+    ))
+
+    row = cursor.fetchone()
+    conn.commit()
+    conn.close()
+
+    return row[0]
+
+
+def get_alert_approval_status(approval_id):
+    ensure_alert_approval_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT status
+        FROM alert_approvals
+        WHERE id = %s
+    """, (approval_id,))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    return row[0]
+
+
+def get_latest_alert_approval_status_by_signature(product_id, old_price, new_price, is_prime=False):
+    ensure_alert_approval_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT status
+        FROM alert_approvals
+        WHERE product_id = %s
+          AND old_price = %s
+          AND new_price = %s
+          AND is_prime = %s
+        ORDER BY id DESC
+        LIMIT 1
+    """, (
+        product_id,
+        old_price,
+        new_price,
+        bool(is_prime)
+    ))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    return row[0]
+
+
+def get_alert_approval_request(approval_id):
+    ensure_alert_approval_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            id,
+            product_id,
+            product_name,
+            old_price,
+            new_price,
+            is_prime,
+            status,
+            requested_at,
+            decided_at,
+            decided_by,
+            source
+        FROM alert_approvals
+        WHERE id = %s
+    """, (approval_id,))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    return row
+
+
+def resolve_alert_approval_request(approval_id, approved, decided_by=None, source="telegram"):
+    ensure_alert_approval_table()
+
+    next_status = "approved" if approved else "rejected"
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE alert_approvals
+        SET
+            status = %s,
+            decided_at = CURRENT_TIMESTAMP,
+            decided_by = %s,
+            source = %s
+        WHERE id = %s
+          AND status = 'pending'
+    """, (
+        next_status,
+        str(decided_by) if decided_by is not None else None,
+        source,
+        approval_id
+    ))
+
+    conn.commit()
+    updated = cursor.rowcount > 0
+    conn.close()
+
+    return updated
 
 
 def add_user_product(telegram_id, product_id):

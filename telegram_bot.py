@@ -41,12 +41,15 @@ from database import (
     upsert_user_product_state,
     get_active_product_promotion_state,
     get_best_price_info,
-    get_report_stats
+    get_report_stats,
+    get_alert_approval_request,
+    resolve_alert_approval_request
 )
 
 from alerts import send_price_alert
 from alerts import build_affiliate_link
 from kindle_scraper import process_product, PriceResult
+from promotion_approval import dispatch_approved_promotion_alerts
 
 load_dotenv()
 
@@ -628,6 +631,70 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     data = query.data
+
+    # =========================
+    # APROVACAO DE PROMOCAO (ADMIN)
+    # =========================
+
+    if data.startswith("approval_yes_") or data.startswith("approval_no_"):
+        if not is_admin_user(update):
+            await query.answer("Apenas o administrador pode decidir.", show_alert=True)
+            return
+
+        parts = data.split("_")
+        if len(parts) != 3:
+            await query.answer("Solicitacao invalida.", show_alert=True)
+            return
+
+        approved = parts[1] == "yes"
+
+        try:
+            approval_id = int(parts[2])
+        except ValueError:
+            await query.answer("Solicitacao invalida.", show_alert=True)
+            return
+
+        approval_request = get_alert_approval_request(approval_id)
+        if approval_request is None:
+            await query.answer("Solicitacao nao encontrada.", show_alert=True)
+            return
+
+        updated = resolve_alert_approval_request(
+            approval_id=approval_id,
+            approved=approved,
+            decided_by=query.from_user.id,
+            source="telegram-inline"
+        )
+
+        if not updated:
+            await query.answer("Essa solicitacao ja foi decidida.", show_alert=True)
+            return
+
+        product_name = approval_request[2]
+        old_price = approval_request[3]
+        new_price = approval_request[4]
+        is_prime = bool(approval_request[5])
+        prime_tag = " (Prime)" if is_prime else ""
+
+        decision_text = "APROVADO" if approved else "CANCELADO"
+
+        await query.edit_message_reply_markup(reply_markup=None)
+
+        immediate_result = ""
+        if approved:
+            sent_count, pending_count = dispatch_approved_promotion_alerts(approval_id)
+            immediate_result = (
+                f"\nAlertas enviados agora: {sent_count}."
+                f" Pendentes/falhas: {pending_count}."
+            )
+
+        await query.message.reply_text(
+            f"{decision_text}: {product_name}{prime_tag}\n"
+            f"De: R$ {old_price:.2f} Por: R$ {new_price:.2f}"
+            f"{immediate_result}"
+        )
+        await query.answer("Decisao registrada.")
+        return
 
     # =========================
     # MONITORAR
