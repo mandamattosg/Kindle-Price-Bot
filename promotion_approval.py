@@ -148,7 +148,7 @@ def dispatch_approved_promotion_alerts(approval_id):
         _id,
         product_id,
         _product_name,
-        _old_price,
+        approved_old_price,
         approved_new_price,
         approved_is_prime,
         status,
@@ -162,11 +162,13 @@ def dispatch_approved_promotion_alerts(approval_id):
         return 0, 0
 
     expected_new_price = to_money(approved_new_price)
+    expected_old_price = to_money(approved_old_price)
     expected_prime_flag = bool(approved_is_prime)
 
     subscribers = get_user_product_states_by_product(product_id)
     sent_count = 0
     pending_count = 0
+    sent_user_ids = set()
 
     for (
         user_id,
@@ -204,6 +206,7 @@ def dispatch_approved_promotion_alerts(approval_id):
 
             if alert_sent:
                 sent_count += 1
+                sent_user_ids.add(user_id)
                 upsert_user_product_state(
                     user_id,
                     product_id,
@@ -219,6 +222,64 @@ def dispatch_approved_promotion_alerts(approval_id):
         except Exception:
             logging.exception(
                 "Falha no envio imediato de alerta aprovado (approval_id=%s, user_id=%s)",
+                approval_id,
+                user_id,
+            )
+            pending_count += 1
+
+    # Fallback para corrida entre clique no "Sim" e persistencia do payload
+    # pendente: envia usando os dados da propria aprovacao para inscritos
+    # ainda nao notificados neste despacho.
+    for (
+        user_id,
+        telegram_id,
+        _last_seen_price,
+        last_notified_price,
+        _pending_alert_old_price,
+        _pending_alert_new_price,
+        _pending_alert_prime,
+    ) in subscribers:
+        if user_id in sent_user_ids:
+            continue
+
+        already_notified_for_same_or_better = False
+        if last_notified_price is not None:
+            try:
+                already_notified_for_same_or_better = (
+                    to_money(last_notified_price) <= expected_new_price
+                )
+            except Exception:
+                already_notified_for_same_or_better = False
+
+        if already_notified_for_same_or_better:
+            continue
+
+        try:
+            alert_sent = send_price_alert(
+                product_id,
+                expected_old_price,
+                expected_new_price,
+                prime=expected_prime_flag,
+                target_users=[(user_id, telegram_id)],
+            )
+
+            if alert_sent:
+                sent_count += 1
+                upsert_user_product_state(
+                    user_id,
+                    product_id,
+                    last_seen_price=expected_new_price,
+                    last_notified_price=expected_new_price,
+                    pending_alert_old_price=None,
+                    pending_alert_new_price=None,
+                    pending_alert_prime=None,
+                )
+            else:
+                pending_count += 1
+
+        except Exception:
+            logging.exception(
+                "Falha no fallback de envio imediato (approval_id=%s, user_id=%s)",
                 approval_id,
                 user_id,
             )
