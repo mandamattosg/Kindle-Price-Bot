@@ -30,7 +30,7 @@ def to_money(value):
 def _build_admin_confirmation_message(product_name, old_price, new_price, prime=False):
     prime_tag = " (Prime)" if prime else ""
     return (
-        f"Promoção no Produto {product_name}{prime_tag}.\n"
+        f"👀 Promoção no Produto {product_name}{prime_tag}.\n"
         f"De: R$ {to_money(old_price):.2f} Por: R$ {to_money(new_price):.2f}.\n\n"
         "Confirmar envio de alerta?"
     )

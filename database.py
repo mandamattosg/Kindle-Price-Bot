@@ -1,7 +1,6 @@
 ﻿from dotenv import load_dotenv
 import os
 
-from httpx import main
 import psycopg
 from dataclasses import dataclass
 
