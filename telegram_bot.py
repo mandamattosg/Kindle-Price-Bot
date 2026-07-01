@@ -18,6 +18,7 @@ import httpx
 import httpcore
 
 from telegram.error import (
+    Forbidden,
     NetworkError,
     TimedOut
 )
@@ -43,6 +44,7 @@ from database import (
     get_best_price_info,
     get_report_stats,
     get_users_with_active_monitorings,
+    remove_all_monitorings_by_telegram_id,
     get_alert_approval_request,
     resolve_alert_approval_request
 )
@@ -553,6 +555,7 @@ async def cupom_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sent_count = 0
     fail_count = 0
+    blocked_count = 0
 
     for _user_id, telegram_id in users:
         try:
@@ -561,6 +564,14 @@ async def cupom_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=coupon_message
             )
             sent_count += 1
+        except Forbidden as exc:
+            blocked_count += 1
+            remove_all_monitorings_by_telegram_id(telegram_id)
+            logging.info(
+                "Usuário %s bloqueou o bot durante /cupom: %s",
+                telegram_id,
+                str(exc)
+            )
         except Exception as exc:
             fail_count += 1
             logging.warning(
@@ -575,6 +586,7 @@ async def cupom_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.reply_text(
         "✅ Envio concluído.\n"
         f"Mensagens enviadas: {sent_count}\n"
+        f"Usuários removidos (bloquearam o bot): {blocked_count}\n"
         f"Falhas: {fail_count}"
     )
 

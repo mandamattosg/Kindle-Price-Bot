@@ -4,7 +4,11 @@ import requests
 import os
 from dotenv import load_dotenv
 
-from database import get_users_by_product, get_product_by_id
+from database import (
+    get_users_by_product,
+    get_product_by_id,
+    remove_all_monitorings_by_telegram_id
+)
 from notifications import send_admin_alert
 
 logging.basicConfig(
@@ -75,6 +79,8 @@ def send_price_alert(product_id, old_price, new_price, prime=False, target_users
     success = True
     max_attempts = 2
     retry_delay_seconds = 2
+    blocked_users_count = 0
+    blocked_removed_monitorings = 0
 
     for user in users:
 
@@ -88,6 +94,7 @@ def send_price_alert(product_id, old_price, new_price, prime=False, target_users
 
         delivered = False
         last_error = None
+        blocked_by_user = False
 
         for attempt in range(1, max_attempts + 1):
             try:
@@ -104,6 +111,22 @@ def send_price_alert(product_id, old_price, new_price, prime=False, target_users
                 if response.status_code == 200:
                     logging.info(f"Alerta enviado para {telegram_id}")
                     delivered = True
+                    break
+
+                if (
+                    response.status_code == 403
+                    and "bot was blocked by the user" in response.text.lower()
+                ):
+                    blocked_by_user = True
+                    removed_count = remove_all_monitorings_by_telegram_id(telegram_id)
+                    blocked_users_count += 1
+                    blocked_removed_monitorings += removed_count
+                    last_error = "HTTP 403: bot was blocked by the user"
+                    logging.info(
+                        "Usuário %s bloqueou o bot. Monitoramentos removidos: %s",
+                        telegram_id,
+                        removed_count
+                    )
                     break
 
                 last_error = f"HTTP {response.status_code}: {response.text}"
@@ -124,6 +147,10 @@ def send_price_alert(product_id, old_price, new_price, prime=False, target_users
 
         if not delivered:
             success = False
+
+            if blocked_by_user:
+                continue
+
             alert_type = "Prime" if prime else "Public"
             send_admin_alert(
                 f"⚠️ Warning envio Telegram\n\n"
@@ -133,5 +160,15 @@ def send_price_alert(product_id, old_price, new_price, prime=False, target_users
                 f"Tentativas: {max_attempts}\n"
                 f"Erro final: {(last_error or 'desconhecido')[:500]}"
             )
+
+    if blocked_users_count > 0:
+        alert_type = "Prime" if prime else "Public"
+        send_admin_alert(
+            "ℹ️ Resumo de usuários bloqueados\n\n"
+            f"Produto: {product_name}\n"
+            f"Tipo: {alert_type}\n"
+            f"Usuários bloqueados no ciclo: {blocked_users_count}\n"
+            f"Monitoramentos removidos: {blocked_removed_monitorings}"
+        )
 
     return success

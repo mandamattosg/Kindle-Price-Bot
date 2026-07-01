@@ -859,6 +859,34 @@ def remove_user_product(telegram_id, product_id):
     conn.close()
 
 
+def remove_all_monitorings_by_telegram_id(telegram_id):
+    user = get_user_by_telegram_id(telegram_id)
+
+    if not user:
+        return 0
+
+    user_id = user[0]
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        DELETE FROM user_products
+        WHERE user_id = %s
+    """, (user_id,))
+    removed_monitorings = cursor.rowcount
+
+    cursor.execute("""
+        DELETE FROM user_product_state
+        WHERE user_id = %s
+    """, (user_id,))
+
+    conn.commit()
+    conn.close()
+
+    return removed_monitorings
+
+
 @dataclass
 class LastPrices:
     public_price: float | None
