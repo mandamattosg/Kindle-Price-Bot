@@ -42,6 +42,7 @@ from database import (
     get_active_product_promotion_state,
     get_best_price_info,
     get_report_stats,
+    get_users_with_active_monitorings,
     get_alert_approval_request,
     resolve_alert_approval_request
 )
@@ -150,7 +151,7 @@ def get_welcome_message(update: Update):
     if is_admin_user(update):
         message = message.replace(
             "/ajuda → mostrar esta mensagem novamente",
-            "/ajuda → mostrar esta mensagem novamente\n/manual → registrar preços manualmente (admin)\n/relatorio → relatório de uso do bot (admin)"
+            "/ajuda → mostrar esta mensagem novamente\n/manual → registrar preços manualmente (admin)\n/relatorio → relatório de uso do bot (admin)\n/cupom → enviar mensagem para usuários ativos (admin)"
         )
     return message
 
@@ -453,6 +454,136 @@ async def manual_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "❌ Comando manual cancelado."
     )
+    return ConversationHandler.END
+
+
+# =========================
+# CUPOM (ADMIN)
+# =========================
+
+COUPON_MESSAGE, COUPON_CONFIRM = range(2, 4)
+
+
+async def cupom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_user(update):
+        await update.message.reply_text(
+            "❌ Você não tem permissão para usar este comando."
+        )
+        return ConversationHandler.END
+
+    ensure_user(update)
+
+    await update.message.reply_text(
+        "🧾 Qual a mensagem de cupom você quer enviar?"
+    )
+
+    return COUPON_MESSAGE
+
+
+async def cupom_receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_user(update):
+        await update.message.reply_text(
+            "❌ Você não tem permissão para usar este comando."
+        )
+        return ConversationHandler.END
+
+    coupon_message = (update.message.text or "").strip()
+
+    if not coupon_message:
+        await update.message.reply_text(
+            "❌ Mensagem vazia. Envie o texto do cupom."
+        )
+        return COUPON_MESSAGE
+
+    if len(coupon_message) > 4000:
+        await update.message.reply_text(
+            "❌ Mensagem muito longa. Envie um texto com até 4000 caracteres."
+        )
+        return COUPON_MESSAGE
+
+    context.user_data["coupon_message"] = coupon_message
+
+    reply_markup = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Sim", callback_data="coupon_yes"),
+            InlineKeyboardButton("❌ Não", callback_data="coupon_no")
+        ]
+    ])
+
+    await update.message.reply_text(
+        "Confirmar envio da mensagem?\n\n"
+        f"{coupon_message}",
+        reply_markup=reply_markup
+    )
+
+    return COUPON_CONFIRM
+
+
+async def cupom_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin_user(update):
+        await query.answer("Sem permissão", show_alert=True)
+        return ConversationHandler.END
+
+    coupon_message = context.user_data.get("coupon_message")
+    if not coupon_message:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(
+            "❌ Mensagem de cupom não encontrada. Reinicie com /cupom."
+        )
+        return ConversationHandler.END
+
+    if query.data == "coupon_no":
+        context.user_data.pop("coupon_message", None)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("❌ Envio de cupom cancelado.")
+        return ConversationHandler.END
+
+    users = get_users_with_active_monitorings()
+
+    if not users:
+        context.user_data.pop("coupon_message", None)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(
+            "ℹ️ Não há usuários com monitoramentos ativos no momento."
+        )
+        return ConversationHandler.END
+
+    sent_count = 0
+    fail_count = 0
+
+    for _user_id, telegram_id in users:
+        try:
+            await context.bot.send_message(
+                chat_id=str(telegram_id),
+                text=coupon_message
+            )
+            sent_count += 1
+        except Exception as exc:
+            fail_count += 1
+            logging.warning(
+                "Falha ao enviar cupom para %s: %s",
+                telegram_id,
+                str(exc)
+            )
+
+    context.user_data.pop("coupon_message", None)
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text(
+        "✅ Envio concluído.\n"
+        f"Mensagens enviadas: {sent_count}\n"
+        f"Falhas: {fail_count}"
+    )
+
+    return ConversationHandler.END
+
+
+async def cupom_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("coupon_message", None)
+    await update.message.reply_text("❌ Comando cupom cancelado.")
     return ConversationHandler.END
 
 
@@ -892,6 +1023,31 @@ def main():
     )
 
     app.add_handler(manual_handler)
+
+    cupom_handler = ConversationHandler(
+        entry_points=[CommandHandler("cupom", cupom)],
+        states={
+            COUPON_MESSAGE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    cupom_receive_message
+                )
+            ],
+            COUPON_CONFIRM: [
+                CallbackQueryHandler(
+                    cupom_confirm,
+                    pattern=r"^coupon_(yes|no)$"
+                )
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cupom_cancel)
+        ],
+        per_chat=True,
+        per_user=True
+    )
+
+    app.add_handler(cupom_handler)
 
     # botões
     app.add_handler(CallbackQueryHandler(button_click))

@@ -1012,6 +1012,27 @@ def get_all_users():
     return rows
 
 
+def get_users_with_active_monitorings():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT DISTINCT users.id, users.telegram_id
+        FROM user_products
+        JOIN users
+            ON users.id = user_products.user_id
+        JOIN products
+            ON products.id = user_products.product_id
+        WHERE products.active = 1
+    """)
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
+
+
 def get_report_stats():
     conn = get_connection()
     cursor = conn.cursor()
