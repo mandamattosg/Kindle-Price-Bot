@@ -21,12 +21,26 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AFILIADO_TAG = os.getenv("AMAZON_ASSOCIATE_TAG")
 
+_BLOCKED_USERS_COUNT = 0
+_BLOCKED_REMOVED_MONITORINGS = 0
+
 
 def build_affiliate_link(asin: str) -> str:
     return f"https://www.amazon.com.br/dp/{asin}?tag={AFILIADO_TAG}"
 
 
+def reset_blocked_users_cycle_stats():
+    global _BLOCKED_USERS_COUNT, _BLOCKED_REMOVED_MONITORINGS
+    _BLOCKED_USERS_COUNT = 0
+    _BLOCKED_REMOVED_MONITORINGS = 0
+
+
+def get_blocked_users_cycle_stats():
+    return _BLOCKED_USERS_COUNT, _BLOCKED_REMOVED_MONITORINGS
+
+
 def send_price_alert(product_id, old_price, new_price, prime=False, target_users=None):
+    global _BLOCKED_USERS_COUNT, _BLOCKED_REMOVED_MONITORINGS
 
     product = get_product_by_id(product_id)
 
@@ -79,8 +93,6 @@ def send_price_alert(product_id, old_price, new_price, prime=False, target_users
     success = True
     max_attempts = 2
     retry_delay_seconds = 2
-    blocked_users_count = 0
-    blocked_removed_monitorings = 0
 
     for user in users:
 
@@ -119,8 +131,8 @@ def send_price_alert(product_id, old_price, new_price, prime=False, target_users
                 ):
                     blocked_by_user = True
                     removed_count = remove_all_monitorings_by_telegram_id(telegram_id)
-                    blocked_users_count += 1
-                    blocked_removed_monitorings += removed_count
+                    _BLOCKED_USERS_COUNT += 1
+                    _BLOCKED_REMOVED_MONITORINGS += removed_count
                     last_error = "HTTP 403: bot was blocked by the user"
                     logging.info(
                         "Usuário %s bloqueou o bot. Monitoramentos removidos: %s",
@@ -160,15 +172,5 @@ def send_price_alert(product_id, old_price, new_price, prime=False, target_users
                 f"Tentativas: {max_attempts}\n"
                 f"Erro final: {(last_error or 'desconhecido')[:500]}"
             )
-
-    if blocked_users_count > 0:
-        alert_type = "Prime" if prime else "Public"
-        send_admin_alert(
-            "ℹ️ Resumo de usuários bloqueados\n\n"
-            f"Produto: {product_name}\n"
-            f"Tipo: {alert_type}\n"
-            f"Usuários bloqueados no ciclo: {blocked_users_count}\n"
-            f"Monitoramentos removidos: {blocked_removed_monitorings}"
-        )
 
     return success
