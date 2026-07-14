@@ -9,9 +9,8 @@ from database import (
     get_alert_approval_request,
     get_latest_alert_approval_status_by_signature,
     get_user_product_states_by_product,
-    upsert_user_product_state,
 )
-from alerts import send_price_alert
+from notification_queue import queue_price_alert
 
 
 MONEY_QUANTUM = Decimal("0.01")
@@ -135,10 +134,10 @@ def request_promotion_approval(product_id, product_name, old_price, new_price, p
 
 def dispatch_approved_promotion_alerts(approval_id):
     """
-    Envia imediatamente os alertas pendentes de uma aprovacao ja aprovada.
+        Enfileira os alertas pendentes de uma aprovacao ja aprovada.
 
     Retorna:
-      (sent_count, pending_count)
+            (queued_count, pending_count)
     """
     approval_request = get_alert_approval_request(approval_id)
     if approval_request is None:
@@ -196,7 +195,7 @@ def dispatch_approved_promotion_alerts(approval_id):
             continue
 
         try:
-            alert_sent = send_price_alert(
+            queued_count = queue_price_alert(
                 product_id,
                 to_money(pending_alert_old_price),
                 pending_new,
@@ -204,18 +203,9 @@ def dispatch_approved_promotion_alerts(approval_id):
                 target_users=[(user_id, telegram_id)],
             )
 
-            if alert_sent:
+            if queued_count > 0:
                 sent_count += 1
                 sent_user_ids.add(user_id)
-                upsert_user_product_state(
-                    user_id,
-                    product_id,
-                    last_seen_price=pending_new,
-                    last_notified_price=pending_new,
-                    pending_alert_old_price=None,
-                    pending_alert_new_price=None,
-                    pending_alert_prime=None,
-                )
             else:
                 pending_count += 1
 
@@ -255,7 +245,7 @@ def dispatch_approved_promotion_alerts(approval_id):
             continue
 
         try:
-            alert_sent = send_price_alert(
+            queued_count = queue_price_alert(
                 product_id,
                 expected_old_price,
                 expected_new_price,
@@ -263,17 +253,8 @@ def dispatch_approved_promotion_alerts(approval_id):
                 target_users=[(user_id, telegram_id)],
             )
 
-            if alert_sent:
+            if queued_count > 0:
                 sent_count += 1
-                upsert_user_product_state(
-                    user_id,
-                    product_id,
-                    last_seen_price=expected_new_price,
-                    last_notified_price=expected_new_price,
-                    pending_alert_old_price=None,
-                    pending_alert_new_price=None,
-                    pending_alert_prime=None,
-                )
             else:
                 pending_count += 1
 

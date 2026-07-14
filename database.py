@@ -131,6 +131,29 @@ CREATE TABLE IF NOT EXISTS alert_approvals (
 )
 """)
 
+    cursor.execute("""
+CREATE TABLE IF NOT EXISTS notification_queue (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    product_id INTEGER NOT NULL,
+    message TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    sent_at TIMESTAMP,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    available_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    button_url TEXT,
+    old_price NUMERIC(10,2),
+    new_price NUMERIC(10,2),
+    is_prime BOOLEAN,
+    error_message TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(product_id) REFERENCES products(id),
+    CHECK (status IN ('pending', 'sending', 'sent', 'failed'))
+)
+""")
+
     # Backward-compatible migration for existing databases.
     cursor.execute("""
         ALTER TABLE user_product_state
@@ -143,6 +166,35 @@ CREATE TABLE IF NOT EXISTS alert_approvals (
     cursor.execute("""
         ALTER TABLE user_product_state
         ADD COLUMN IF NOT EXISTS pending_alert_prime BOOLEAN
+    """)
+
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS available_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS button_url TEXT
+    """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS old_price NUMERIC(10,2)
+    """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS new_price NUMERIC(10,2)
+    """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS is_prime BOOLEAN
+    """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS error_message TEXT
     """)
 
     conn.commit()
@@ -190,6 +242,321 @@ CREATE TABLE IF NOT EXISTS alert_approvals (
 
     conn.commit()
     conn.close()
+
+
+def ensure_notification_queue_table():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+CREATE TABLE IF NOT EXISTS notification_queue (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    product_id INTEGER NOT NULL,
+    message TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    sent_at TIMESTAMP,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    available_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    button_url TEXT,
+    old_price NUMERIC(10,2),
+    new_price NUMERIC(10,2),
+    is_prime BOOLEAN,
+    error_message TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(product_id) REFERENCES products(id),
+    CHECK (status IN ('pending', 'sending', 'sent', 'failed'))
+)
+""")
+
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS available_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS button_url TEXT
+    """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS old_price NUMERIC(10,2)
+    """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS new_price NUMERIC(10,2)
+    """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS is_prime BOOLEAN
+    """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ADD COLUMN IF NOT EXISTS error_message TEXT
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+@dataclass
+class NotificationQueueItem:
+    id: int
+    user_id: int
+    telegram_id: str
+    product_id: int
+    message: str
+    retry_count: int
+    button_url: str | None
+    old_price: float | None
+    new_price: float | None
+    is_prime: bool | None
+
+
+def enqueue_notification(
+    user_id,
+    product_id,
+    message,
+    button_url=None,
+    old_price=None,
+    new_price=None,
+    is_prime=None
+):
+    ensure_notification_queue_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO notification_queue (
+            user_id,
+            product_id,
+            message,
+            status,
+            available_at,
+            button_url,
+            old_price,
+            new_price,
+            is_prime,
+            updated_at
+        )
+        SELECT %s, %s, %s, 'pending', CURRENT_TIMESTAMP, %s, %s, %s, %s, CURRENT_TIMESTAMP
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM notification_queue
+            WHERE user_id = %s
+              AND product_id = %s
+              AND status IN ('pending', 'sending')
+              AND COALESCE(new_price, -1) = COALESCE(%s, -1)
+              AND COALESCE(is_prime, FALSE) = COALESCE(%s, FALSE)
+        )
+        RETURNING id
+    """, (
+        user_id,
+        product_id,
+        message,
+        button_url,
+        old_price,
+        new_price,
+        is_prime,
+        user_id,
+        product_id,
+        new_price,
+        is_prime
+    ))
+
+    row = cursor.fetchone()
+    conn.commit()
+    conn.close()
+
+    return row[0] if row else None
+
+
+def claim_pending_notifications(batch_size=50):
+    ensure_notification_queue_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        WITH picked AS (
+            SELECT id
+            FROM notification_queue
+            WHERE status = 'pending'
+              AND available_at <= CURRENT_TIMESTAMP
+            ORDER BY created_at ASC, id ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT %s
+        )
+        UPDATE notification_queue queue
+        SET
+            status = 'sending',
+            updated_at = CURRENT_TIMESTAMP
+        FROM picked, users
+        WHERE queue.id = picked.id
+          AND users.id = queue.user_id
+        RETURNING
+            queue.id,
+            queue.user_id,
+            users.telegram_id,
+            queue.product_id,
+            queue.message,
+            queue.retry_count,
+            queue.button_url,
+            queue.old_price,
+            queue.new_price,
+            queue.is_prime
+    """, (batch_size,))
+
+    rows = cursor.fetchall()
+    conn.commit()
+    conn.close()
+
+    items = []
+    for row in rows:
+        items.append(
+            NotificationQueueItem(
+                id=row[0],
+                user_id=row[1],
+                telegram_id=row[2],
+                product_id=row[3],
+                message=row[4],
+                retry_count=row[5],
+                button_url=row[6],
+                old_price=row[7],
+                new_price=row[8],
+                is_prime=row[9]
+            )
+        )
+
+    return items
+
+
+def mark_notification_sent(notification_id):
+    ensure_notification_queue_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE notification_queue
+        SET
+            status = 'sent',
+            sent_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP,
+            error_message = NULL
+        WHERE id = %s
+    """, (notification_id,))
+
+    conn.commit()
+    conn.close()
+
+
+def requeue_notification(notification_id, delay_seconds, error_message=None):
+    ensure_notification_queue_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE notification_queue
+        SET
+            status = 'pending',
+            retry_count = retry_count + 1,
+            available_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second'),
+            updated_at = CURRENT_TIMESTAMP,
+            error_message = %s
+        WHERE id = %s
+    """, (
+        max(0, int(delay_seconds)),
+        error_message,
+        notification_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def mark_notification_failed(notification_id, error_message=None):
+    ensure_notification_queue_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE notification_queue
+        SET
+            status = 'failed',
+            retry_count = retry_count + 1,
+            updated_at = CURRENT_TIMESTAMP,
+            error_message = %s
+        WHERE id = %s
+    """, (
+        error_message,
+        notification_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def reset_stuck_sending_notifications(max_minutes=10):
+    ensure_notification_queue_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE notification_queue
+        SET
+            status = 'pending',
+            retry_count = retry_count + 1,
+            available_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP,
+            error_message = 'worker_restart'
+        WHERE status = 'sending'
+          AND updated_at < CURRENT_TIMESTAMP - (%s * INTERVAL '1 minute')
+    """, (max(1, int(max_minutes)),))
+
+    recovered = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    return recovered
+
+
+def acquire_notification_worker_lock(lock_key=982451653):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT pg_try_advisory_lock(%s)", (int(lock_key),))
+    row = cursor.fetchone()
+
+    locked = bool(row[0]) if row else False
+    if not locked:
+        conn.close()
+        return None
+
+    return conn
+
+
+def release_notification_worker_lock(lock_conn, lock_key=982451653):
+    if lock_conn is None:
+        return
+
+    try:
+        cursor = lock_conn.cursor()
+        cursor.execute("SELECT pg_advisory_unlock(%s)", (int(lock_key),))
+        lock_conn.commit()
+    except Exception:
+        pass
+    finally:
+        lock_conn.close()
 
 
 def create_alert_approval_request(product_id, product_name, old_price, new_price, is_prime=False):

@@ -39,7 +39,6 @@ from database import (
     get_last_prices,
     get_product_price_history,
     initialize_user_product_state,
-    upsert_user_product_state,
     get_active_product_promotion_state,
     get_best_price_info,
     get_report_stats,
@@ -49,9 +48,9 @@ from database import (
     resolve_alert_approval_request
 )
 
-from alerts import send_price_alert
 from alerts import build_affiliate_link
 from kindle_scraper import process_product, PriceResult
+from notification_queue import queue_price_alert
 from promotion_approval import dispatch_approved_promotion_alerts
 
 load_dotenv()
@@ -827,7 +826,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if approved:
             sent_count, pending_count = dispatch_approved_promotion_alerts(approval_id)
             immediate_result = (
-                f"\nAlertas enviados agora: {sent_count}."
+                f"\nAlertas enfileirados agora: {sent_count}."
                 f" Pendentes/falhas: {pending_count}."
             )
 
@@ -919,21 +918,13 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             and promotion_old_price is not None
             and promotion_new_price is not None
         ):
-            alert_sent = send_price_alert(
+            queue_price_alert(
                 product_id,
                 float(promotion_old_price),
                 float(promotion_new_price),
                 prime=bool(promotion_is_prime),
                 target_users=[(internal_user_id, telegram_id)]
             )
-
-            if alert_sent:
-                upsert_user_product_state(
-                    internal_user_id,
-                    product_id,
-                    last_seen_price=current_best_price,
-                    last_notified_price=current_best_price
-                )
 
         if "Básico" in product_name and color:
             product_name += f" — {color}"
