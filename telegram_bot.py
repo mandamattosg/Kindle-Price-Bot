@@ -18,7 +18,6 @@ import httpx
 import httpcore
 
 from telegram.error import (
-    Forbidden,
     NetworkError,
     TimedOut
 )
@@ -43,7 +42,7 @@ from database import (
     get_best_price_info,
     get_report_stats,
     get_users_with_active_monitorings,
-    remove_all_monitorings_by_telegram_id,
+    enqueue_coupon_notifications_bulk,
     get_alert_approval_request,
     resolve_alert_approval_request
 )
@@ -552,41 +551,27 @@ async def cupom_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    sent_count = 0
-    fail_count = 0
-    blocked_count = 0
+    user_ids = [user_id for user_id, _telegram_id in users]
 
-    for _user_id, telegram_id in users:
-        try:
-            await context.bot.send_message(
-                chat_id=str(telegram_id),
-                text=coupon_message
-            )
-            sent_count += 1
-        except Forbidden as exc:
-            blocked_count += 1
-            remove_all_monitorings_by_telegram_id(telegram_id)
-            logging.info(
-                "Usuário %s bloqueou o bot durante /cupom: %s",
-                telegram_id,
-                str(exc)
-            )
-        except Exception as exc:
-            fail_count += 1
-            logging.warning(
-                "Falha ao enviar cupom para %s: %s",
-                telegram_id,
-                str(exc)
-            )
+    try:
+        queued_count = enqueue_coupon_notifications_bulk(
+            user_ids=user_ids,
+            message=coupon_message,
+        )
+        fail_count = max(0, len(user_ids) - queued_count)
+    except Exception as exc:
+        queued_count = 0
+        fail_count = len(user_ids)
+        logging.warning("Falha ao enfileirar cupom em lote: %s", str(exc))
 
     context.user_data.pop("coupon_message", None)
 
     await query.edit_message_reply_markup(reply_markup=None)
-    await query.message.reply_text(
-        "✅ Envio concluído.\n"
-        f"Mensagens enviadas: {sent_count}\n"
-        f"Usuários removidos (bloquearam o bot): {blocked_count}\n"
-        f"Falhas: {fail_count}"
+    send_admin_alert(
+        "✅ Cupom enfileirado para envio\n"
+        f"Mensagens enfileiradas: {queued_count}\n"
+        f"Falhas ao enfileirar: {fail_count}\n\n"
+        "ℹ️ O envio será feito pelo notification worker."
     )
 
     return ConversationHandler.END

@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS alert_approvals (
 CREATE TABLE IF NOT EXISTS notification_queue (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL,
-    product_id INTEGER NOT NULL,
+    product_id INTEGER,
     message TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -196,6 +196,10 @@ CREATE TABLE IF NOT EXISTS notification_queue (
         ALTER TABLE notification_queue
         ADD COLUMN IF NOT EXISTS error_message TEXT
     """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ALTER COLUMN product_id DROP NOT NULL
+    """)
 
     conn.commit()
     conn.close()
@@ -252,7 +256,7 @@ def ensure_notification_queue_table():
 CREATE TABLE IF NOT EXISTS notification_queue (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL,
-    product_id INTEGER NOT NULL,
+    product_id INTEGER,
     message TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -299,6 +303,10 @@ CREATE TABLE IF NOT EXISTS notification_queue (
         ALTER TABLE notification_queue
         ADD COLUMN IF NOT EXISTS error_message TEXT
     """)
+    cursor.execute("""
+        ALTER TABLE notification_queue
+        ALTER COLUMN product_id DROP NOT NULL
+    """)
 
     conn.commit()
     conn.close()
@@ -309,7 +317,7 @@ class NotificationQueueItem:
     id: int
     user_id: int
     telegram_id: str
-    product_id: int
+    product_id: int | None
     message: str
     retry_count: int
     button_url: str | None
@@ -375,6 +383,68 @@ def enqueue_notification(
     conn.close()
 
     return row[0] if row else None
+
+
+def enqueue_coupon_notifications_bulk(user_ids, message):
+    ensure_notification_queue_table()
+
+    clean_user_ids = []
+    for user_id in user_ids:
+        try:
+            clean_user_ids.append(int(user_id))
+        except (TypeError, ValueError):
+            continue
+
+    if not clean_user_ids:
+        return 0
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        WITH input_users AS (
+            SELECT DISTINCT UNNEST(%s::INTEGER[]) AS user_id
+        ),
+        inserted AS (
+            INSERT INTO notification_queue (
+                user_id,
+                product_id,
+                message,
+                status,
+                available_at,
+                updated_at
+            )
+            SELECT
+                input_users.user_id,
+                NULL,
+                %s,
+                'pending',
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP
+            FROM input_users
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM notification_queue queue
+                WHERE queue.user_id = input_users.user_id
+                  AND queue.product_id IS NULL
+                  AND queue.status IN ('pending', 'sending')
+                  AND queue.new_price IS NULL
+                  AND COALESCE(queue.is_prime, FALSE) = FALSE
+            )
+            RETURNING id
+        )
+        SELECT COUNT(*)
+        FROM inserted
+        """,
+        (clean_user_ids, message),
+    )
+
+    row = cursor.fetchone()
+    conn.commit()
+    conn.close()
+
+    return int(row[0]) if row else 0
 
 
 def claim_pending_notifications(batch_size=50):
