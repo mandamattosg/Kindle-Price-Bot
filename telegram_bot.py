@@ -24,6 +24,7 @@ from telegram.error import (
 
 import logging
 import traceback
+from datetime import datetime
 from notifications import send_admin_alert
 from dotenv import load_dotenv
 import os
@@ -43,6 +44,9 @@ from database import (
     get_report_stats,
     get_users_with_active_monitorings,
     enqueue_coupon_notifications_bulk,
+    get_users_who_received_product_alert,
+    enqueue_notifications_bulk,
+    get_products_lowest_prices,
     get_alert_approval_request,
     resolve_alert_approval_request
 )
@@ -151,7 +155,7 @@ def get_welcome_message(update: Update):
     if is_admin_user(update):
         message = message.replace(
             "/ajuda → mostrar esta mensagem novamente",
-            "/ajuda → mostrar esta mensagem novamente\n/manual → registrar preços manualmente (admin)\n/relatorio → relatório de uso do bot (admin)\n/cupom → enviar mensagem para usuários ativos (admin)"
+            "/ajuda → mostrar esta mensagem novamente\n/manual → registrar preços manualmente (admin)\n/relatorio → relatório de uso do bot (admin)\n/cupom → enviar mensagem para usuários ativos (admin)\n/lembrete → reenviar aviso para quem recebeu alerta (admin)\n/resumo → enviar resumo de campanha (admin)"
         )
     return message
 
@@ -580,6 +584,406 @@ async def cupom_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cupom_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("coupon_message", None)
     await update.message.reply_text("❌ Comando cupom cancelado.")
+    return ConversationHandler.END
+
+
+# =========================
+# LEMBRETE (ADMIN)
+# =========================
+
+REMINDER_SELECT, REMINDER_MESSAGE, REMINDER_CONFIRM = range(4, 7)
+
+
+def _build_product_display_name(name, color):
+    if "Básico" in name and color:
+        return f"{name} — {color}"
+    return name
+
+
+async def lembrete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_user(update):
+        await update.message.reply_text(
+            "❌ Você não tem permissão para usar este comando."
+        )
+        return ConversationHandler.END
+
+    ensure_user(update)
+
+    reply_markup = build_products_keyboard(prefix="reminder_")
+
+    await update.message.reply_text(
+        "🔔 Selecione o Kindle para o lembrete:",
+        reply_markup=reply_markup
+    )
+
+    return REMINDER_SELECT
+
+
+async def lembrete_select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin_user(update):
+        await query.answer("Sem permissão", show_alert=True)
+        return ConversationHandler.END
+
+    if query.data is None or not query.data.startswith("reminder_"):
+        await query.message.reply_text("❌ Seleção inválida.")
+        return ConversationHandler.END
+
+    try:
+        product_id = int(query.data.split("_")[1])
+    except (TypeError, ValueError):
+        await query.message.reply_text("❌ Produto inválido.")
+        return ConversationHandler.END
+
+    product = next((p for p in get_active_products() if p[0] == product_id), None)
+    if not product:
+        await query.message.reply_text("❌ Produto não encontrado.")
+        return ConversationHandler.END
+
+    _pid, asin, name, color = product
+    context.user_data["reminder_product_id"] = product_id
+    context.user_data["reminder_product_name"] = _build_product_display_name(name, color)
+    context.user_data["reminder_button_url"] = build_affiliate_link(asin)
+
+    await query.message.reply_text(
+        "✍️ Agora envie a mensagem personalizada do lembrete."
+    )
+
+    return REMINDER_MESSAGE
+
+
+async def lembrete_receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_user(update):
+        await update.message.reply_text(
+            "❌ Você não tem permissão para usar este comando."
+        )
+        return ConversationHandler.END
+
+    reminder_message = (update.message.text or "").strip()
+    if not reminder_message:
+        await update.message.reply_text("❌ Mensagem vazia. Envie o texto do lembrete.")
+        return REMINDER_MESSAGE
+
+    if len(reminder_message) > 4000:
+        await update.message.reply_text("❌ Mensagem muito longa. Máximo de 4000 caracteres.")
+        return REMINDER_MESSAGE
+
+    product_name = context.user_data.get("reminder_product_name")
+    if not product_name:
+        await update.message.reply_text("❌ Produto do lembrete não encontrado. Reinicie com /lembrete.")
+        return ConversationHandler.END
+
+    context.user_data["reminder_message"] = reminder_message
+
+    reply_markup = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Sim", callback_data="reminder_yes"),
+            InlineKeyboardButton("❌ Não", callback_data="reminder_no")
+        ]
+    ])
+
+    await update.message.reply_text(
+        "Confirmar envio do lembrete?\n\n"
+        f"Produto: {product_name}\n\n"
+        f"{reminder_message}",
+        reply_markup=reply_markup
+    )
+
+    return REMINDER_CONFIRM
+
+
+async def lembrete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin_user(update):
+        await query.answer("Sem permissão", show_alert=True)
+        return ConversationHandler.END
+
+    if query.data == "reminder_no":
+        context.user_data.pop("reminder_product_id", None)
+        context.user_data.pop("reminder_product_name", None)
+        context.user_data.pop("reminder_button_url", None)
+        context.user_data.pop("reminder_message", None)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("❌ Envio de lembrete cancelado.")
+        return ConversationHandler.END
+
+    product_id = context.user_data.get("reminder_product_id")
+    product_name = context.user_data.get("reminder_product_name")
+    button_url = context.user_data.get("reminder_button_url")
+    reminder_message = context.user_data.get("reminder_message")
+
+    if not product_id or not reminder_message:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("❌ Dados do lembrete incompletos. Reinicie com /lembrete.")
+        return ConversationHandler.END
+
+    recipients = get_users_who_received_product_alert(product_id)
+    user_ids = [row[0] for row in recipients]
+
+    if not user_ids:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(
+            "ℹ️ Ninguém recebeu alerta inicial desse produto ainda."
+        )
+        return ConversationHandler.END
+
+    try:
+        queued_count = enqueue_notifications_bulk(
+            user_ids=user_ids,
+            message=reminder_message,
+            product_id=product_id,
+            button_url=button_url,
+            old_price=None,
+            new_price=None,
+            is_prime=False,
+        )
+        fail_count = max(0, len(user_ids) - queued_count)
+    except Exception as exc:
+        queued_count = 0
+        fail_count = len(user_ids)
+        logging.warning("Falha ao enfileirar lembrete em lote: %s", str(exc))
+
+    context.user_data.pop("reminder_product_id", None)
+    context.user_data.pop("reminder_product_name", None)
+    context.user_data.pop("reminder_button_url", None)
+    context.user_data.pop("reminder_message", None)
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    send_admin_alert(
+        "✅ Lembrete enfileirado para envio\n"
+        f"Produto: {product_name}\n"
+        f"Mensagens enfileiradas: {queued_count}\n"
+        f"Falhas ao enfileirar: {fail_count}\n\n"
+        "ℹ️ Destinatários: apenas quem recebeu o alerta inicial."
+    )
+
+    return ConversationHandler.END
+
+
+async def lembrete_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("reminder_product_id", None)
+    context.user_data.pop("reminder_product_name", None)
+    context.user_data.pop("reminder_button_url", None)
+    context.user_data.pop("reminder_message", None)
+    await update.message.reply_text("❌ Comando lembrete cancelado.")
+    return ConversationHandler.END
+
+
+# =========================
+# RESUMO (ADMIN)
+# =========================
+
+SUMMARY_EVENT_NAME, SUMMARY_PERIOD, SUMMARY_CONFIRM = range(7, 10)
+
+
+def _parse_summary_period(text):
+    raw = (text or "").strip()
+    if not raw:
+        return None, None, None
+
+    normalized = raw.lower().replace(" até ", " a ")
+
+    if " a " in normalized:
+        pieces = [piece.strip() for piece in normalized.split(" a ", 1)]
+        if len(pieces) != 2:
+            return None, None, None
+        left, right = pieces[0], pieces[1]
+        try:
+            start_date = datetime.strptime(left, "%d/%m/%Y").date()
+            end_date = datetime.strptime(right, "%d/%m/%Y").date()
+        except ValueError:
+            return None, None, None
+    else:
+        try:
+            start_date = datetime.strptime(normalized, "%d/%m/%Y").date()
+            end_date = start_date
+        except ValueError:
+            return None, None, None
+
+    if end_date < start_date:
+        return None, None, None
+
+    label = f"{start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}"
+    return start_date, end_date, label
+
+
+def _build_campaign_summary_message(event_name, rows):
+    lines = [
+        f"🎉 Resumo do evento: {event_name}",
+        "",
+        "Menores preços encontrados:",
+    ]
+
+    for _pid, name, color, _asin, lowest_price in rows:
+        display_name = _build_product_display_name(name, color)
+        lines.append(f"- {display_name}: R$ {float(lowest_price):.2f}")
+
+    lines.extend([
+        "",
+        "🔍 O bot continuará monitorando promoções para você.",
+    ])
+
+    return "\n".join(lines)
+
+
+async def resumo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_user(update):
+        await update.message.reply_text(
+            "❌ Você não tem permissão para usar este comando."
+        )
+        return ConversationHandler.END
+
+    ensure_user(update)
+
+    await update.message.reply_text(
+        "📝 Qual o nome do evento para o resumo da campanha?"
+    )
+
+    return SUMMARY_EVENT_NAME
+
+
+async def resumo_receive_event_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_user(update):
+        await update.message.reply_text(
+            "❌ Você não tem permissão para usar este comando."
+        )
+        return ConversationHandler.END
+
+    event_name = (update.message.text or "").strip()
+    if not event_name:
+        await update.message.reply_text("❌ Nome do evento vazio. Envie novamente.")
+        return SUMMARY_EVENT_NAME
+
+    context.user_data["summary_event_name"] = event_name
+
+    await update.message.reply_text(
+        "📅 Informe o período do resumo.\n"
+        "Formato: DD/MM/AAAA a DD/MM/AAAA\n"
+        "Exemplo: 10/07/2026 a 16/07/2026\n\n"
+        "Se preferir um único dia: DD/MM/AAAA"
+    )
+
+    return SUMMARY_PERIOD
+
+
+async def resumo_receive_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_user(update):
+        await update.message.reply_text(
+            "❌ Você não tem permissão para usar este comando."
+        )
+        return ConversationHandler.END
+
+    event_name = context.user_data.get("summary_event_name")
+    if not event_name:
+        await update.message.reply_text("❌ Evento não encontrado. Reinicie com /resumo.")
+        return ConversationHandler.END
+
+    start_date, end_date, _period_label = _parse_summary_period(update.message.text or "")
+    if start_date is None:
+        await update.message.reply_text(
+            "❌ Período inválido. Use:\n"
+            "DD/MM/AAAA a DD/MM/AAAA\n"
+            "ou somente DD/MM/AAAA"
+        )
+        return SUMMARY_PERIOD
+
+    rows = get_products_lowest_prices(
+        limit_products=200,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if not rows:
+        await update.message.reply_text(
+            "ℹ️ Sem histórico de preços suficiente para montar o resumo nesse período."
+        )
+        return SUMMARY_PERIOD
+
+    summary_message = _build_campaign_summary_message(event_name, rows)
+    context.user_data["summary_message"] = summary_message
+
+    reply_markup = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirmar envio", callback_data="summary_yes"),
+            InlineKeyboardButton("❌ Cancelar", callback_data="summary_no"),
+        ]
+    ])
+
+    await update.message.reply_text(
+        "Confirma o envio deste resumo?\n\n"
+        f"{summary_message}",
+        reply_markup=reply_markup
+    )
+
+    return SUMMARY_CONFIRM
+
+
+async def resumo_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin_user(update):
+        await query.answer("Sem permissão", show_alert=True)
+        return ConversationHandler.END
+
+    if query.data == "summary_no":
+        context.user_data.pop("summary_message", None)
+        context.user_data.pop("summary_event_name", None)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("❌ Envio do resumo cancelado.")
+        return ConversationHandler.END
+
+    summary_message = context.user_data.get("summary_message")
+    if not summary_message:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("❌ Resumo não encontrado. Reinicie com /resumo.")
+        return ConversationHandler.END
+
+    users = get_users_with_active_monitorings()
+    user_ids = [user_id for user_id, _telegram_id in users]
+
+    if not user_ids:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("ℹ️ Não há usuários ativos para receber o resumo.")
+        return ConversationHandler.END
+
+    try:
+        queued_count = enqueue_notifications_bulk(
+            user_ids=user_ids,
+            message=summary_message,
+            product_id=None,
+            button_url=None,
+            old_price=None,
+            new_price=None,
+            is_prime=False,
+        )
+        fail_count = max(0, len(user_ids) - queued_count)
+    except Exception as exc:
+        queued_count = 0
+        fail_count = len(user_ids)
+        logging.warning("Falha ao enfileirar resumo em lote: %s", str(exc))
+
+    context.user_data.pop("summary_message", None)
+    context.user_data.pop("summary_event_name", None)
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    send_admin_alert(
+        "✅ Resumo de campanha enfileirado\n"
+        f"Mensagens enfileiradas: {queued_count}\n"
+        f"Falhas ao enfileirar: {fail_count}\n\n"
+        "ℹ️ O envio será feito pelo notification worker."
+    )
+
+    return ConversationHandler.END
+
+
+async def resumo_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("summary_message", None)
+    context.user_data.pop("summary_event_name", None)
+    await update.message.reply_text("❌ Comando resumo cancelado.")
     return ConversationHandler.END
 
 
@@ -1036,6 +1440,68 @@ def main():
     )
 
     app.add_handler(cupom_handler)
+
+    lembrete_handler = ConversationHandler(
+        entry_points=[CommandHandler("lembrete", lembrete)],
+        states={
+            REMINDER_SELECT: [
+                CallbackQueryHandler(
+                    lembrete_select_product,
+                    pattern=r"^reminder_"
+                )
+            ],
+            REMINDER_MESSAGE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    lembrete_receive_message
+                )
+            ],
+            REMINDER_CONFIRM: [
+                CallbackQueryHandler(
+                    lembrete_confirm,
+                    pattern=r"^reminder_(yes|no)$"
+                )
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", lembrete_cancel)
+        ],
+        per_chat=True,
+        per_user=True
+    )
+
+    app.add_handler(lembrete_handler)
+
+    resumo_handler = ConversationHandler(
+        entry_points=[CommandHandler("resumo", resumo)],
+        states={
+            SUMMARY_EVENT_NAME: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    resumo_receive_event_name
+                )
+            ],
+            SUMMARY_PERIOD: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    resumo_receive_period
+                )
+            ],
+            SUMMARY_CONFIRM: [
+                CallbackQueryHandler(
+                    resumo_confirm,
+                    pattern=r"^summary_(yes|no)$"
+                )
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", resumo_cancel)
+        ],
+        per_chat=True,
+        per_user=True
+    )
+
+    app.add_handler(resumo_handler)
 
     # botões
     app.add_handler(CallbackQueryHandler(button_click))

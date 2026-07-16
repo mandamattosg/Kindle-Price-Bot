@@ -1498,6 +1498,165 @@ def get_users_with_active_monitorings():
     return rows
 
 
+def get_users_who_received_product_alert(product_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT DISTINCT users.id, users.telegram_id
+        FROM notification_queue queue
+        JOIN users
+            ON users.id = queue.user_id
+        JOIN user_products
+            ON user_products.user_id = users.id
+           AND user_products.product_id = queue.product_id
+        WHERE queue.product_id = %s
+          AND queue.status = 'sent'
+          AND queue.new_price IS NOT NULL
+        ORDER BY users.id ASC
+    """, (product_id,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return rows
+
+
+def enqueue_notifications_bulk(
+    user_ids,
+    message,
+    product_id=None,
+    button_url=None,
+    old_price=None,
+    new_price=None,
+    is_prime=None,
+):
+    ensure_notification_queue_table()
+
+    clean_user_ids = []
+    for user_id in user_ids:
+        try:
+            clean_user_ids.append(int(user_id))
+        except (TypeError, ValueError):
+            continue
+
+    if not clean_user_ids:
+        return 0
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        WITH input_users AS (
+            SELECT DISTINCT UNNEST(%s::INTEGER[]) AS user_id
+        ),
+        inserted AS (
+            INSERT INTO notification_queue (
+                user_id,
+                product_id,
+                message,
+                status,
+                available_at,
+                button_url,
+                old_price,
+                new_price,
+                is_prime,
+                updated_at
+            )
+            SELECT
+                input_users.user_id,
+                %s,
+                %s,
+                'pending',
+                CURRENT_TIMESTAMP,
+                %s,
+                %s,
+                %s,
+                %s,
+                CURRENT_TIMESTAMP
+            FROM input_users
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM notification_queue queue
+                WHERE queue.user_id = input_users.user_id
+                  AND queue.product_id IS NOT DISTINCT FROM %s
+                  AND queue.status IN ('pending', 'sending')
+                  AND queue.new_price IS NOT DISTINCT FROM %s
+                  AND COALESCE(queue.is_prime, FALSE) = COALESCE(%s, FALSE)
+            )
+            RETURNING id
+        )
+        SELECT COUNT(*)
+        FROM inserted
+        """,
+        (
+            clean_user_ids,
+            product_id,
+            message,
+            button_url,
+            old_price,
+            new_price,
+            is_prime,
+            product_id,
+            new_price,
+            is_prime,
+        ),
+    )
+
+    row = cursor.fetchone()
+    conn.commit()
+    conn.close()
+
+    return int(row[0]) if row else 0
+
+
+def get_products_lowest_prices(limit_products=200, start_date=None, end_date=None):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            p.id,
+            p.name,
+            p.color,
+            p.asin,
+            MIN(best.best_price) AS lowest_price
+        FROM products p
+        JOIN (
+            SELECT
+                product_id,
+                LEAST(
+                    COALESCE(public_price, 99999999),
+                    COALESCE(prime_price, 99999999)
+                ) AS best_price
+            FROM price_history
+                        WHERE (public_price IS NOT NULL OR prime_price IS NOT NULL)
+              AND (%s::DATE IS NULL OR captured_at >= %s::DATE)
+              AND (%s::DATE IS NULL OR captured_at < (%s::DATE + INTERVAL '1 day'))
+        ) AS best
+            ON best.product_id = p.id
+        WHERE p.active = 1
+        GROUP BY p.id, p.name, p.color, p.asin
+        ORDER BY p.display_order ASC, p.id ASC
+        LIMIT %s
+        """,
+        (
+            start_date,
+            start_date,
+            end_date,
+            end_date,
+            max(1, int(limit_products)),
+        ),
+    )
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return rows
+
+
 def get_report_stats():
     conn = get_connection()
     cursor = conn.cursor()
