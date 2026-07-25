@@ -950,12 +950,18 @@ CREATE TABLE IF NOT EXISTS product_promotion_state (
     alert_old_price NUMERIC(10,2),
     alert_new_price NUMERIC(10,2),
     alert_prime BOOLEAN,
+    stop_alerts_from_date DATE,
     started_at TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     ended_at TIMESTAMP,
     FOREIGN KEY(product_id) REFERENCES products(id)
 )
 """)
+
+    cursor.execute("""
+        ALTER TABLE product_promotion_state
+        ADD COLUMN IF NOT EXISTS stop_alerts_from_date DATE
+    """)
 
     conn.commit()
     conn.close()
@@ -967,6 +973,19 @@ def get_active_product_promotion_state(product_id):
     conn = get_connection()
     cursor = conn.cursor()
 
+    # Auto-encerramento de promoções que atingiram a data de corte definida pelo admin.
+    cursor.execute("""
+        UPDATE product_promotion_state
+        SET
+            is_active = FALSE,
+            ended_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE product_id = %s
+          AND is_active = TRUE
+          AND stop_alerts_from_date IS NOT NULL
+          AND stop_alerts_from_date <= CURRENT_DATE
+    """, (product_id,))
+
     cursor.execute("""
         SELECT
             alert_old_price,
@@ -976,6 +995,10 @@ def get_active_product_promotion_state(product_id):
         FROM product_promotion_state
         WHERE product_id = %s
           AND is_active = TRUE
+                    AND (
+                            stop_alerts_from_date IS NULL
+                            OR stop_alerts_from_date > CURRENT_DATE
+                    )
     """, (product_id,))
 
     row = cursor.fetchone()
@@ -997,15 +1020,17 @@ def upsert_active_product_promotion_state(product_id, alert_old_price, alert_new
             alert_old_price,
             alert_new_price,
             alert_prime,
+            stop_alerts_from_date,
             started_at,
             ended_at
-        ) VALUES (%s, TRUE, %s, %s, %s, CURRENT_TIMESTAMP, NULL)
+        ) VALUES (%s, TRUE, %s, %s, %s, NULL, CURRENT_TIMESTAMP, NULL)
         ON CONFLICT (product_id) DO UPDATE
         SET
             is_active = TRUE,
             alert_old_price = EXCLUDED.alert_old_price,
             alert_new_price = EXCLUDED.alert_new_price,
             alert_prime = EXCLUDED.alert_prime,
+            stop_alerts_from_date = NULL,
             started_at = CASE
                 WHEN product_promotion_state.is_active = TRUE
                 THEN product_promotion_state.started_at
@@ -1022,6 +1047,32 @@ def upsert_active_product_promotion_state(product_id, alert_old_price, alert_new
 
     conn.commit()
     conn.close()
+
+
+def set_product_promotion_stop_date(product_id, stop_from_date):
+    ensure_product_promotion_state_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE product_promotion_state
+        SET
+            stop_alerts_from_date = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE product_id = %s
+          AND is_active = TRUE
+    """, (
+        stop_from_date,
+        product_id
+    ))
+
+    updated = cursor.rowcount > 0
+
+    conn.commit()
+    conn.close()
+
+    return updated
 
 
 def deactivate_product_promotion_state(product_id):

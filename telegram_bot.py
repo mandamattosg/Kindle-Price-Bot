@@ -24,7 +24,7 @@ from telegram.error import (
 
 import logging
 import traceback
-from datetime import datetime
+from datetime import datetime, date
 from notifications import send_admin_alert
 from dotenv import load_dotenv
 import os
@@ -40,6 +40,8 @@ from database import (
     get_product_price_history,
     initialize_user_product_state,
     get_active_product_promotion_state,
+    deactivate_product_promotion_state,
+    set_product_promotion_stop_date,
     get_best_price_info,
     get_report_stats,
     get_users_with_active_monitorings,
@@ -155,7 +157,7 @@ def get_welcome_message(update: Update):
     if is_admin_user(update):
         message = message.replace(
             "/ajuda → mostrar esta mensagem novamente",
-            "/ajuda → mostrar esta mensagem novamente\n/manual → registrar preços manualmente (admin)\n/relatorio → relatório de uso do bot (admin)\n/cupom → enviar mensagem para usuários ativos (admin)\n/lembrete → reenviar aviso para quem recebeu alerta (admin)\n/resumo → enviar resumo de campanha (admin)"
+            "/ajuda → mostrar esta mensagem novamente\n/manual → registrar preços manualmente (admin)\n/relatorio → relatório de uso do bot (admin)\n/cupom → enviar mensagem para usuários ativos (admin)\n/lembrete → reenviar aviso para quem recebeu alerta (admin)\n/resumo → enviar resumo de campanha (admin)\n/encerraroferta → parar alertas dessa promoção a partir de uma data (admin)"
         )
     return message
 
@@ -778,6 +780,7 @@ async def lembrete_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 
 SUMMARY_EVENT_NAME, SUMMARY_PERIOD, SUMMARY_CONFIRM = range(7, 10)
+PROMO_END_SELECT, PROMO_END_DATE, PROMO_END_CONFIRM = range(10, 13)
 
 
 def _parse_summary_period(text):
@@ -984,6 +987,208 @@ async def resumo_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("summary_message", None)
     context.user_data.pop("summary_event_name", None)
     await update.message.reply_text("❌ Comando resumo cancelado.")
+    return ConversationHandler.END
+
+
+# =========================
+# ENCERRAR OFERTA (ADMIN)
+# =========================
+
+def _parse_promo_end_date(text):
+    raw = (text or "").strip().lower()
+    if not raw:
+        return None
+
+    if raw in {"hoje"}:
+        return date.today()
+
+    try:
+        return datetime.strptime(raw, "%d/%m/%Y").date()
+    except ValueError:
+        return None
+
+
+def _clear_promo_end_context(context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("promo_end_product_id", None)
+    context.user_data.pop("promo_end_product_name", None)
+    context.user_data.pop("promo_end_cutoff_iso", None)
+
+
+async def encerrar_oferta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_user(update):
+        await update.message.reply_text(
+            "❌ Você não tem permissão para usar este comando."
+        )
+        return ConversationHandler.END
+
+    ensure_user(update)
+
+    reply_markup = build_products_keyboard(prefix="endpromo_")
+
+    await update.message.reply_text(
+        "🛑 Selecione o Kindle para encerrar os alertas da promoção atual:",
+        reply_markup=reply_markup
+    )
+
+    return PROMO_END_SELECT
+
+
+async def encerrar_oferta_select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin_user(update):
+        await query.answer("Sem permissão", show_alert=True)
+        return ConversationHandler.END
+
+    if query.data is None or not query.data.startswith("endpromo_"):
+        await query.message.reply_text("❌ Seleção inválida.")
+        return ConversationHandler.END
+
+    try:
+        product_id = int(query.data.split("_")[1])
+    except (TypeError, ValueError):
+        await query.message.reply_text("❌ Produto inválido.")
+        return ConversationHandler.END
+
+    product = next((p for p in get_active_products() if p[0] == product_id), None)
+    if not product:
+        await query.message.reply_text("❌ Produto não encontrado.")
+        return ConversationHandler.END
+
+    _pid, _asin, name, color = product
+    product_name = _build_product_display_name(name, color)
+
+    promotion_state = get_active_product_promotion_state(product_id)
+    if promotion_state is None:
+        await query.message.reply_text(
+            f"ℹ️ Não há promoção ativa para {product_name} no momento."
+        )
+        return ConversationHandler.END
+
+    old_price, new_price, is_prime, started_at = promotion_state
+    prime_tag = " (Prime)" if bool(is_prime) else ""
+    started_text = started_at.strftime("%d/%m/%Y %H:%M") if started_at else "desconhecido"
+
+    context.user_data["promo_end_product_id"] = product_id
+    context.user_data["promo_end_product_name"] = product_name
+
+    await query.message.reply_text(
+        "Promoção ativa encontrada:\n"
+        f"Produto: {product_name}{prime_tag}\n"
+        f"De: R$ {float(old_price):.2f} Por: R$ {float(new_price):.2f}\n"
+        f"Início: {started_text}\n\n"
+        "📅 Informe a data de corte (dd/mm/aaaa) para parar alertas dessa promoção.\n"
+        "Exemplo: 31/07/2026\n"
+        "Você também pode enviar 'hoje' para encerrar imediatamente."
+    )
+
+    return PROMO_END_DATE
+
+
+async def encerrar_oferta_receive_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_user(update):
+        await update.message.reply_text(
+            "❌ Você não tem permissão para usar este comando."
+        )
+        return ConversationHandler.END
+
+    product_id = context.user_data.get("promo_end_product_id")
+    product_name = context.user_data.get("promo_end_product_name")
+
+    if not product_id or not product_name:
+        await update.message.reply_text("❌ Produto não encontrado. Reinicie com /encerraroferta.")
+        return ConversationHandler.END
+
+    cutoff_date = _parse_promo_end_date(update.message.text if update.message else "")
+    if cutoff_date is None:
+        await update.message.reply_text(
+            "❌ Data inválida. Use o formato dd/mm/aaaa (ex.: 31/07/2026) ou 'hoje'."
+        )
+        return PROMO_END_DATE
+
+    context.user_data["promo_end_cutoff_iso"] = cutoff_date.isoformat()
+
+    behavior = (
+        "encerrar imediatamente"
+        if cutoff_date <= date.today()
+        else f"encerrar a partir de {cutoff_date.strftime('%d/%m/%Y')}"
+    )
+
+    reply_markup = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirmar", callback_data="endpromo_confirm_yes"),
+            InlineKeyboardButton("❌ Cancelar", callback_data="endpromo_confirm_no")
+        ]
+    ])
+
+    await update.message.reply_text(
+        "Confirmar regra de encerramento?\n\n"
+        f"Produto: {product_name}\n"
+        f"Ação: {behavior}",
+        reply_markup=reply_markup
+    )
+
+    return PROMO_END_CONFIRM
+
+
+async def encerrar_oferta_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin_user(update):
+        await query.answer("Sem permissão", show_alert=True)
+        return ConversationHandler.END
+
+    if query.data == "endpromo_confirm_no":
+        _clear_promo_end_context(context)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("❌ Encerramento de oferta cancelado.")
+        return ConversationHandler.END
+
+    product_id = context.user_data.get("promo_end_product_id")
+    product_name = context.user_data.get("promo_end_product_name")
+    cutoff_iso = context.user_data.get("promo_end_cutoff_iso")
+
+    if not product_id or not product_name or not cutoff_iso:
+        _clear_promo_end_context(context)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("❌ Dados incompletos. Reinicie com /encerraroferta.")
+        return ConversationHandler.END
+
+    cutoff_date = datetime.strptime(cutoff_iso, "%Y-%m-%d").date()
+
+    updated = set_product_promotion_stop_date(product_id, cutoff_date)
+
+    if not updated:
+        _clear_promo_end_context(context)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(
+            "ℹ️ A promoção já não está ativa para esse produto."
+        )
+        return ConversationHandler.END
+
+    if cutoff_date <= date.today():
+        deactivate_product_promotion_state(product_id)
+        status_line = "🛑 Encerrada imediatamente."
+    else:
+        status_line = f"📅 Encerramento agendado para {cutoff_date.strftime('%d/%m/%Y')}."
+
+    _clear_promo_end_context(context)
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text(
+        f"✅ Regra aplicada para {product_name}.\n"
+        f"{status_line}\n"
+        "A partir da data de corte, novos usuários não receberão mais o alerta dessa promoção."
+    )
+
+    return ConversationHandler.END
+
+
+async def encerrar_oferta_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _clear_promo_end_context(context)
+    await update.message.reply_text("❌ Comando encerrar oferta cancelado.")
     return ConversationHandler.END
 
 
@@ -1502,6 +1707,37 @@ def main():
     )
 
     app.add_handler(resumo_handler)
+
+    encerrar_oferta_handler = ConversationHandler(
+        entry_points=[CommandHandler("encerraroferta", encerrar_oferta)],
+        states={
+            PROMO_END_SELECT: [
+                CallbackQueryHandler(
+                    encerrar_oferta_select_product,
+                    pattern=r"^endpromo_"
+                )
+            ],
+            PROMO_END_DATE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    encerrar_oferta_receive_date
+                )
+            ],
+            PROMO_END_CONFIRM: [
+                CallbackQueryHandler(
+                    encerrar_oferta_confirm,
+                    pattern=r"^endpromo_confirm_(yes|no)$"
+                )
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", encerrar_oferta_cancel)
+        ],
+        per_chat=True,
+        per_user=True
+    )
+
+    app.add_handler(encerrar_oferta_handler)
 
     # botões
     app.add_handler(CallbackQueryHandler(button_click))
