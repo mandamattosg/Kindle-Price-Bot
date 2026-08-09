@@ -1748,14 +1748,24 @@ def get_report_stats():
     }
 
 
-def delete_old_prices():
+def delete_old_prices(days=60):
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
         DELETE FROM price_history
-        WHERE captured_at < NOW() - INTERVAL '60 days'
-    """)
+        WHERE captured_at < NOW() - (%s * INTERVAL '1 day')
+    """, (days,))
+
+    cursor.execute("""
+        DELETE FROM notification_queue
+        WHERE created_at < NOW() - (%s * INTERVAL '1 day')
+    """, (days,))
+
+    cursor.execute("""
+        DELETE FROM alert_approvals
+        WHERE requested_at < NOW() - (%s * INTERVAL '1 day')
+    """, (days,))
 
     conn.commit()
     conn.close()
