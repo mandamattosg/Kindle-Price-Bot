@@ -125,6 +125,8 @@ CREATE TABLE IF NOT EXISTS alert_approvals (
     requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     decided_at TIMESTAMP,
     decided_by TEXT,
+    admin_chat_id TEXT,
+    admin_message_id BIGINT,
     source TEXT,
     FOREIGN KEY(product_id) REFERENCES products(id),
     CHECK (status IN ('pending', 'approved', 'rejected'))
@@ -201,6 +203,15 @@ CREATE TABLE IF NOT EXISTS notification_queue (
         ALTER COLUMN product_id DROP NOT NULL
     """)
 
+    cursor.execute("""
+        ALTER TABLE alert_approvals
+        ADD COLUMN IF NOT EXISTS admin_chat_id TEXT
+    """)
+    cursor.execute("""
+        ALTER TABLE alert_approvals
+        ADD COLUMN IF NOT EXISTS admin_message_id BIGINT
+    """)
+
     conn.commit()
     conn.close()
 
@@ -238,11 +249,22 @@ CREATE TABLE IF NOT EXISTS alert_approvals (
     requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     decided_at TIMESTAMP,
     decided_by TEXT,
+    admin_chat_id TEXT,
+    admin_message_id BIGINT,
     source TEXT,
     FOREIGN KEY(product_id) REFERENCES products(id),
     CHECK (status IN ('pending', 'approved', 'rejected'))
 )
 """)
+
+    cursor.execute("""
+        ALTER TABLE alert_approvals
+        ADD COLUMN IF NOT EXISTS admin_chat_id TEXT
+    """)
+    cursor.execute("""
+        ALTER TABLE alert_approvals
+        ADD COLUMN IF NOT EXISTS admin_message_id BIGINT
+    """)
 
     conn.commit()
     conn.close()
@@ -692,14 +714,12 @@ def get_latest_alert_approval_status_by_signature(product_id, old_price, new_pri
         SELECT status
         FROM alert_approvals
         WHERE product_id = %s
-          AND old_price = %s
           AND new_price = %s
           AND is_prime = %s
         ORDER BY id DESC
         LIMIT 1
     """, (
         product_id,
-        old_price,
         new_price,
         bool(is_prime)
     ))
@@ -711,6 +731,72 @@ def get_latest_alert_approval_status_by_signature(product_id, old_price, new_pri
         return None
 
     return row[0]
+
+
+def refresh_pending_alert_approval_request_by_signature(
+    product_id,
+    product_name,
+    old_price,
+    new_price,
+    is_prime=False
+):
+    ensure_alert_approval_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE alert_approvals
+        SET
+            product_name = %s,
+            old_price = %s,
+            requested_at = CURRENT_TIMESTAMP
+        WHERE id = (
+            SELECT id
+            FROM alert_approvals
+            WHERE product_id = %s
+              AND new_price = %s
+              AND is_prime = %s
+              AND status = 'pending'
+            ORDER BY id DESC
+            LIMIT 1
+        )
+                RETURNING id, admin_chat_id, admin_message_id
+    """, (
+        product_name,
+        old_price,
+        product_id,
+        new_price,
+        bool(is_prime)
+    ))
+
+    row = cursor.fetchone()
+    conn.commit()
+    conn.close()
+
+    return row if row else None
+
+
+def set_alert_approval_admin_message_reference(approval_id, admin_chat_id, admin_message_id):
+    ensure_alert_approval_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE alert_approvals
+        SET
+            admin_chat_id = %s,
+            admin_message_id = %s
+        WHERE id = %s
+    """, (
+        str(admin_chat_id) if admin_chat_id is not None else None,
+        int(admin_message_id) if admin_message_id is not None else None,
+        approval_id,
+    ))
+
+    conn.commit()
+    conn.close()
 
 
 def get_alert_approval_request(approval_id):

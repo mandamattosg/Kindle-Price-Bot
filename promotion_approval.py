@@ -6,6 +6,8 @@ import requests
 
 from database import (
     create_alert_approval_request,
+    refresh_pending_alert_approval_request_by_signature,
+    set_alert_approval_admin_message_reference,
     get_alert_approval_request,
     get_latest_alert_approval_status_by_signature,
     get_user_product_states_by_product,
@@ -43,7 +45,7 @@ def _send_approval_prompt_to_admin(approval_id, message_text):
         logging.error(
             "Aprovacao de promocao ativada, mas TELEGRAM_BOT_TOKEN ou ADMIN_CHAT_ID ausente."
         )
-        return False
+        return False, None, None
 
     keyboard = {
         "inline_keyboard": [[
@@ -74,12 +76,71 @@ def _send_approval_prompt_to_admin(approval_id, message_text):
                 response.status_code,
                 response.text,
             )
-            return False
+            return False, None, None
+
+        payload = response.json()
+        result = payload.get("result") if isinstance(payload, dict) else None
+        message_id = None
+        chat_id = admin_chat_id
+
+        if isinstance(result, dict):
+            message_id = result.get("message_id")
+            chat = result.get("chat") or {}
+            chat_id = chat.get("id", admin_chat_id)
+
+        return True, chat_id, message_id
     except Exception:
         logging.exception("Erro ao enviar pedido de aprovacao ao admin")
+        return False, None, None
+
+
+def _edit_approval_prompt_to_admin(approval_id, message_text, admin_chat_id, admin_message_id):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+
+    if not token or admin_chat_id is None or admin_message_id is None:
         return False
 
-    return True
+    keyboard = {
+        "inline_keyboard": [[
+            {
+                "text": "Sim",
+                "callback_data": f"approval_yes_{approval_id}",
+            },
+            {
+                "text": "Não",
+                "callback_data": f"approval_no_{approval_id}",
+            },
+        ]]
+    }
+
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/editMessageText",
+            json={
+                "chat_id": str(admin_chat_id),
+                "message_id": int(admin_message_id),
+                "text": message_text,
+                "reply_markup": keyboard,
+            },
+            timeout=15,
+        )
+
+        if response.status_code == 200:
+            return True
+
+        body = (response.text or "").lower()
+        if "message is not modified" in body:
+            return True
+
+        logging.warning(
+            "Falha ao editar pedido de aprovacao ao admin: HTTP %s | %s",
+            response.status_code,
+            response.text,
+        )
+        return False
+    except Exception:
+        logging.exception("Erro ao editar pedido de aprovacao ao admin")
+        return False
 
 
 def request_promotion_approval(product_id, product_name, old_price, new_price, prime=False):
@@ -106,7 +167,47 @@ def request_promotion_approval(product_id, product_name, old_price, new_price, p
     if latest_status == "approved":
         return True
 
-    if latest_status in {"pending", "rejected"}:
+    if latest_status == "pending":
+        refreshed = refresh_pending_alert_approval_request_by_signature(
+            product_id=product_id,
+            product_name=product_name,
+            old_price=normalized_old_price,
+            new_price=normalized_new_price,
+            is_prime=prime,
+        )
+
+        message_text = _build_admin_confirmation_message(
+            product_name=product_name,
+            old_price=old_price,
+            new_price=new_price,
+            prime=prime,
+        )
+
+        if refreshed is not None:
+            refreshed_approval_id, admin_chat_id, admin_message_id = refreshed
+
+            edited = _edit_approval_prompt_to_admin(
+                refreshed_approval_id,
+                message_text,
+                admin_chat_id,
+                admin_message_id,
+            )
+
+            if not edited:
+                sent, sent_chat_id, sent_message_id = _send_approval_prompt_to_admin(
+                    refreshed_approval_id,
+                    message_text,
+                )
+
+                if sent:
+                    set_alert_approval_admin_message_reference(
+                        refreshed_approval_id,
+                        sent_chat_id,
+                        sent_message_id,
+                    )
+        return False
+
+    if latest_status == "rejected":
         return False
 
     approval_id = create_alert_approval_request(
@@ -124,9 +225,18 @@ def request_promotion_approval(product_id, product_name, old_price, new_price, p
         prime=prime,
     )
 
-    prompt_sent = _send_approval_prompt_to_admin(approval_id, message_text)
+    prompt_sent, admin_chat_id, admin_message_id = _send_approval_prompt_to_admin(
+        approval_id,
+        message_text,
+    )
     if not prompt_sent:
         return False
+
+    set_alert_approval_admin_message_reference(
+        approval_id,
+        admin_chat_id,
+        admin_message_id,
+    )
 
     # Sem timeout/polling: aguarda decisao do admin e segue no proximo ciclo.
     return False
