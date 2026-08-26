@@ -5,11 +5,10 @@ from decimal import Decimal
 import requests
 
 from database import (
-    create_alert_approval_request,
+    get_or_create_alert_approval_request,
     refresh_pending_alert_approval_request_by_signature,
     set_alert_approval_admin_message_reference,
     get_alert_approval_request,
-    get_latest_alert_approval_status_by_signature,
     get_user_product_states_by_product,
 )
 from notification_queue import queue_price_alert
@@ -157,8 +156,9 @@ def request_promotion_approval(product_id, product_name, old_price, new_price, p
     normalized_old_price = to_money(old_price)
     normalized_new_price = to_money(new_price)
 
-    latest_status = get_latest_alert_approval_status_by_signature(
+    approval_id, latest_status = get_or_create_alert_approval_request(
         product_id=product_id,
+        product_name=product_name,
         old_price=normalized_old_price,
         new_price=normalized_new_price,
         is_prime=prime,
@@ -209,14 +209,6 @@ def request_promotion_approval(product_id, product_name, old_price, new_price, p
 
     if latest_status == "rejected":
         return False
-
-    approval_id = create_alert_approval_request(
-        product_id=product_id,
-        product_name=product_name,
-        old_price=normalized_old_price,
-        new_price=normalized_new_price,
-        is_prime=prime,
-    )
 
     message_text = _build_admin_confirmation_message(
         product_name=product_name,

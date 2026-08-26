@@ -683,6 +683,68 @@ def create_alert_approval_request(product_id, product_name, old_price, new_price
     return row[0]
 
 
+def get_or_create_alert_approval_request(
+    product_id,
+    product_name,
+    old_price,
+    new_price,
+    is_prime=False
+):
+    """Atomically find the latest approval or create a pending one."""
+    ensure_alert_approval_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (f"alert-approval:{product_id}:{new_price}:{bool(is_prime)}",)
+        )
+        cursor.execute("""
+            SELECT id, status
+            FROM alert_approvals
+            WHERE product_id = %s
+              AND new_price = %s
+              AND is_prime = %s
+            ORDER BY id DESC
+            LIMIT 1
+        """, (product_id, new_price, bool(is_prime)))
+
+        row = cursor.fetchone()
+        if row:
+            conn.commit()
+            return row
+
+        cursor.execute("""
+            INSERT INTO alert_approvals (
+                product_id,
+                product_name,
+                old_price,
+                new_price,
+                is_prime,
+                status
+            )
+            VALUES (%s, %s, %s, %s, %s, 'pending')
+            RETURNING id, status
+        """, (
+            product_id,
+            product_name,
+            old_price,
+            new_price,
+            bool(is_prime)
+        ))
+
+        row = cursor.fetchone()
+        conn.commit()
+        return row
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def get_alert_approval_status(approval_id):
     ensure_alert_approval_table()
 
