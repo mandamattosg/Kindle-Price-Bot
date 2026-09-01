@@ -11,6 +11,7 @@ from notifications import send_admin_alert
 from database import (
     acquire_notification_worker_lock,
     claim_pending_notifications,
+    count_pending_notifications,
     create_tables,
     mark_notification_failed,
     mark_notification_sent,
@@ -146,7 +147,7 @@ def _process_item(item, max_retries):
     return "requeued"
 
 
-def _send_cycle_summary(cycle_started_at, stats):
+def _send_cycle_summary(cycle_started_at, stats, initial_count):
     summary_enabled = os.getenv("NOTIFICATION_WORKER_ADMIN_SUMMARY", "1").strip().lower() in {
         "1", "true", "yes", "on"
     }
@@ -160,14 +161,19 @@ def _send_cycle_summary(cycle_started_at, stats):
         + stats["failed"]
         + stats["blocked"]
     )
+    completed = stats["sent"] + stats["failed"] + stats["blocked"]
+    success_rate = (stats["sent"] / total_processed * 100) if total_processed else 0
+    failure_rate = (stats["failed"] / total_processed * 100) if total_processed else 0
+    completion_rate = (completed / initial_count * 100) if initial_count else 0
 
     message = (
         "📬 Resumo do worker de notificacoes\n\n"
         f"Tempo de drenagem: {duration_seconds}s\n"
+        f"Progresso: {completed}/{initial_count} ({completion_rate:.1f}%)\n"
         f"Processadas: {total_processed}\n"
-        f"✅ Enviadas: {stats['sent']}\n"
+        f"✅ Enviadas: {stats['sent']} ({success_rate:.1f}%)\n"
         f"🔁 Reenfileiradas: {stats['requeued']}\n"
-        f"⛔ Falha definitiva: {stats['failed']}\n"
+        f"⛔ Falha definitiva: {stats['failed']} ({failure_rate:.1f}%)\n"
         f"🚫 Usuario bloqueou bot: {stats['blocked']}"
     )
 
@@ -198,6 +204,7 @@ def run_worker_forever():
     )
 
     cycle_started_at = None
+    cycle_initial_count = 0
     cycle_stats = {
         "sent": 0,
         "requeued": 0,
@@ -208,12 +215,18 @@ def run_worker_forever():
 
     try:
         while True:
+            pending_before_claim = count_pending_notifications()
             items = claim_pending_notifications(batch_size=batch_size)
 
             if not items:
                 if had_activity_in_cycle and cycle_started_at is not None:
-                    _send_cycle_summary(cycle_started_at, cycle_stats)
+                    _send_cycle_summary(
+                        cycle_started_at,
+                        cycle_stats,
+                        cycle_initial_count,
+                    )
                     cycle_started_at = None
+                    cycle_initial_count = 0
                     cycle_stats = {
                         "sent": 0,
                         "requeued": 0,
@@ -227,21 +240,49 @@ def run_worker_forever():
 
             if cycle_started_at is None:
                 cycle_started_at = datetime.now()
+                cycle_initial_count = max(pending_before_claim, len(items))
 
-            sent_count = 0
             for item in items:
                 result = _process_item(item, max_retries=max_retries)
-                if result == "sent":
-                    sent_count += 1
                 if result in cycle_stats:
                     cycle_stats[result] += 1
                 had_activity_in_cycle = True
 
+            total_processed = sum(cycle_stats.values())
+            completed = (
+                cycle_stats["sent"]
+                + cycle_stats["failed"]
+                + cycle_stats["blocked"]
+            )
+            success_rate = (
+                cycle_stats["sent"] / total_processed * 100
+                if total_processed else 0
+            )
+            failure_rate = (
+                cycle_stats["failed"] / total_processed * 100
+                if total_processed else 0
+            )
+            completion_rate = (
+                completed / cycle_initial_count * 100
+                if cycle_initial_count else 0
+            )
+            pending_after_batch = count_pending_notifications()
+
             logging.info(
-                "Lote processado: total=%s enviados=%s restantes=%s",
-                len(items),
-                sent_count,
-                len(items) - sent_count,
+                "Progresso: concluido=%s/%s (%.1f%%) | processadas=%s | "
+                "enviadas=%s (%.1f%%) | falhas=%s (%.1f%%) | "
+                "bloqueados=%s | reenfileiradas=%s | pendentes_prontas=%s",
+                completed,
+                cycle_initial_count,
+                completion_rate,
+                total_processed,
+                cycle_stats["sent"],
+                success_rate,
+                cycle_stats["failed"],
+                failure_rate,
+                cycle_stats["blocked"],
+                cycle_stats["requeued"],
+                pending_after_batch,
             )
 
             time.sleep(max(batch_sleep, 0.0))

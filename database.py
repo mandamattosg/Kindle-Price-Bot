@@ -469,6 +469,25 @@ def enqueue_coupon_notifications_bulk(user_ids, message):
     return int(row[0]) if row else 0
 
 
+def count_pending_notifications():
+    ensure_notification_queue_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM notification_queue
+        WHERE status = 'pending'
+          AND available_at <= CURRENT_TIMESTAMP
+    """)
+
+    row = cursor.fetchone()
+    conn.close()
+
+    return int(row[0]) if row else 0
+
+
 def claim_pending_notifications(batch_size=50):
     ensure_notification_queue_table()
 
