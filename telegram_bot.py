@@ -56,7 +56,7 @@ from database import (
 from alerts import build_affiliate_link
 from kindle_scraper import process_product, PriceResult
 from notification_queue import queue_price_alert
-from promotion_approval import dispatch_approved_promotion_alerts
+from promotion_approval import dispatch_approved_promotion_alerts, is_promotion_approval_enabled
 
 load_dotenv()
 
@@ -1059,10 +1059,13 @@ async def encerrar_oferta_select_product(update: Update, context: ContextTypes.D
     _pid, _asin, name, color = product
     product_name = _build_product_display_name(name, color)
 
-    promotion_state = get_active_product_promotion_state(product_id)
+    promotion_state = get_active_product_promotion_state(
+        product_id,
+        require_approved=is_promotion_approval_enabled(),
+    )
     if promotion_state is None:
         await query.message.reply_text(
-            f"ℹ️ Não há promoção ativa para {product_name} no momento."
+            f"ℹ️ Não há promoção aprovada ativa para {product_name} no momento."
         )
         return ConversationHandler.END
 

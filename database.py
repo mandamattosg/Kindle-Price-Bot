@@ -1176,7 +1176,7 @@ CREATE TABLE IF NOT EXISTS product_promotion_state (
     conn.close()
 
 
-def get_active_product_promotion_state(product_id):
+def get_active_product_promotion_state(product_id, require_approved=False):
     ensure_product_promotion_state_table()
 
     conn = get_connection()
@@ -1195,6 +1195,21 @@ def get_active_product_promotion_state(product_id):
           AND stop_alerts_from_date <= CURRENT_DATE
     """, (product_id,))
 
+    approved_filter = ""
+    if require_approved:
+        # Considera apenas promocoes que o admin aprovou no pedido de envio.
+        approved_filter = """
+          AND EXISTS (
+              SELECT 1
+              FROM alert_approvals aa
+              WHERE aa.product_id = product_promotion_state.product_id
+                AND aa.new_price = product_promotion_state.alert_new_price
+                AND aa.is_prime = COALESCE(product_promotion_state.alert_prime, FALSE)
+                AND aa.status = 'approved'
+          )
+        """
+        ensure_alert_approval_table()
+
     cursor.execute("""
         SELECT
             alert_old_price,
@@ -1208,7 +1223,7 @@ def get_active_product_promotion_state(product_id):
                             stop_alerts_from_date IS NULL
                             OR stop_alerts_from_date > CURRENT_DATE
                     )
-    """, (product_id,))
+    """ + approved_filter, (product_id,))
 
     row = cursor.fetchone()
     conn.close()
