@@ -5,6 +5,8 @@ from decimal import Decimal
 import requests
 
 from database import (
+    claim_alert_approval_prompt_slot,
+    release_alert_approval_prompt_slot,
     get_or_create_alert_approval_request,
     refresh_pending_alert_approval_request_by_signature,
     set_alert_approval_admin_message_reference,
@@ -168,6 +170,30 @@ def request_promotion_approval(product_id, product_name, old_price, new_price, p
         return True
 
     if latest_status == "pending":
+        message_text = _build_admin_confirmation_message(
+            product_name=product_name,
+            old_price=old_price,
+            new_price=new_price,
+            prime=prime,
+        )
+
+        # Apenas quem reservar o slot envia; nunca reenviar se a edicao falhar.
+        if claim_alert_approval_prompt_slot(approval_id):
+            sent, sent_chat_id, sent_message_id = _send_approval_prompt_to_admin(
+                approval_id,
+                message_text,
+            )
+
+            if sent:
+                set_alert_approval_admin_message_reference(
+                    approval_id,
+                    sent_chat_id,
+                    sent_message_id,
+                )
+            else:
+                release_alert_approval_prompt_slot(approval_id)
+            return False
+
         refreshed = refresh_pending_alert_approval_request_by_signature(
             product_id=product_id,
             product_name=product_name,
@@ -176,61 +202,19 @@ def request_promotion_approval(product_id, product_name, old_price, new_price, p
             is_prime=prime,
         )
 
-        message_text = _build_admin_confirmation_message(
-            product_name=product_name,
-            old_price=old_price,
-            new_price=new_price,
-            prime=prime,
-        )
-
         if refreshed is not None:
             refreshed_approval_id, admin_chat_id, admin_message_id = refreshed
 
-            edited = _edit_approval_prompt_to_admin(
-                refreshed_approval_id,
-                message_text,
-                admin_chat_id,
-                admin_message_id,
-            )
-
-            if not edited:
-                sent, sent_chat_id, sent_message_id = _send_approval_prompt_to_admin(
+            if admin_message_id:
+                _edit_approval_prompt_to_admin(
                     refreshed_approval_id,
                     message_text,
+                    admin_chat_id,
+                    admin_message_id,
                 )
-
-                if sent:
-                    set_alert_approval_admin_message_reference(
-                        refreshed_approval_id,
-                        sent_chat_id,
-                        sent_message_id,
-                    )
         return False
 
-    if latest_status == "rejected":
-        return False
-
-    message_text = _build_admin_confirmation_message(
-        product_name=product_name,
-        old_price=old_price,
-        new_price=new_price,
-        prime=prime,
-    )
-
-    prompt_sent, admin_chat_id, admin_message_id = _send_approval_prompt_to_admin(
-        approval_id,
-        message_text,
-    )
-    if not prompt_sent:
-        return False
-
-    set_alert_approval_admin_message_reference(
-        approval_id,
-        admin_chat_id,
-        admin_message_id,
-    )
-
-    # Sem timeout/polling: aguarda decisao do admin e segue no proximo ciclo.
+    # rejected (ou status desconhecido): sem envio
     return False
 
 

@@ -842,13 +842,15 @@ def refresh_pending_alert_approval_request_by_signature(
             ORDER BY id DESC
             LIMIT 1
         )
-                RETURNING id, admin_chat_id, admin_message_id
+        AND old_price IS DISTINCT FROM %s
+        RETURNING id, admin_chat_id, admin_message_id
     """, (
         product_name,
         old_price,
         product_id,
         new_price,
-        bool(is_prime)
+        bool(is_prime),
+        old_price
     ))
 
     row = cursor.fetchone()
@@ -856,6 +858,46 @@ def refresh_pending_alert_approval_request_by_signature(
     conn.close()
 
     return row if row else None
+
+
+def claim_alert_approval_prompt_slot(approval_id):
+    """Atomically reserve the right to send the admin prompt (admin_message_id=0 means in-flight)."""
+    ensure_alert_approval_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE alert_approvals
+        SET admin_message_id = 0
+        WHERE id = %s
+          AND status = 'pending'
+          AND admin_message_id IS NULL
+        RETURNING id
+    """, (approval_id,))
+
+    claimed = cursor.fetchone() is not None
+    conn.commit()
+    conn.close()
+
+    return claimed
+
+
+def release_alert_approval_prompt_slot(approval_id):
+    ensure_alert_approval_table()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE alert_approvals
+        SET admin_message_id = NULL
+        WHERE id = %s
+          AND admin_message_id = 0
+    """, (approval_id,))
+
+    conn.commit()
+    conn.close()
 
 
 def set_alert_approval_admin_message_reference(approval_id, admin_chat_id, admin_message_id):
