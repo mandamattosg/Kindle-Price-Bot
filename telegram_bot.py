@@ -1493,7 +1493,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 last_prices.prime_price
             )
 
-        promotion_state = get_active_product_promotion_state(product_id)
+        promotion_state = get_active_product_promotion_state(
+            product_id,
+            require_approved=is_promotion_approval_enabled(),
+        )
 
         initialize_user_product_state(
             telegram_id,

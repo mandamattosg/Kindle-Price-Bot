@@ -731,7 +731,31 @@ def get_or_create_alert_approval_request(
         """, (product_id, new_price, bool(is_prime)))
 
         row = cursor.fetchone()
-        if row:
+        if row and row[1] in ("approved", "rejected"):
+            # Decisao antiga nao vale para uma nova queda ao mesmo preco.
+            max_age_days = int(os.getenv("APPROVAL_MAX_AGE_DAYS", "7"))
+            cursor.execute("""
+                SELECT
+                    (%s::boolean
+                     AND COALESCE(aa.decided_at, aa.requested_at)
+                         < CURRENT_TIMESTAMP - (%s * INTERVAL '1 day'))
+                    OR EXISTS (
+                        SELECT 1
+                        FROM price_history ph
+                        WHERE ph.product_id = aa.product_id
+                          AND ph.captured_at > COALESCE(aa.decided_at, aa.requested_at)
+                          AND (CASE WHEN aa.is_prime THEN ph.prime_price
+                                    ELSE ph.public_price END) > aa.new_price
+                    )
+                FROM alert_approvals aa
+                WHERE aa.id = %s
+            """, (row[1] == "approved", max_age_days, row[0]))
+            expired = bool(cursor.fetchone()[0])
+            if not expired:
+                conn.commit()
+                return row
+
+        elif row:
             conn.commit()
             return row
 
@@ -1197,15 +1221,24 @@ def get_active_product_promotion_state(product_id, require_approved=False):
 
     approved_filter = ""
     if require_approved:
-        # Considera apenas promocoes que o admin aprovou no pedido de envio.
+        # Considera apenas promocoes aprovadas pelo admin: a decisao mais recente
+        # para o mesmo preco deve ser "approved" e posterior ao inicio da
+        # promocao atual (aprovacoes de promocoes antigas nao contam).
         approved_filter = """
           AND EXISTS (
               SELECT 1
-              FROM alert_approvals aa
-              WHERE aa.product_id = product_promotion_state.product_id
-                AND aa.new_price = product_promotion_state.alert_new_price
-                AND aa.is_prime = COALESCE(product_promotion_state.alert_prime, FALSE)
-                AND aa.status = 'approved'
+              FROM (
+                  SELECT aa.status, aa.decided_at, aa.requested_at
+                  FROM alert_approvals aa
+                  WHERE aa.product_id = product_promotion_state.product_id
+                    AND aa.new_price = product_promotion_state.alert_new_price
+                    AND aa.is_prime = COALESCE(product_promotion_state.alert_prime, FALSE)
+                  ORDER BY aa.id DESC
+                  LIMIT 1
+              ) latest
+              WHERE latest.status = 'approved'
+                AND COALESCE(latest.decided_at, latest.requested_at)
+                    >= product_promotion_state.started_at
           )
         """
         ensure_alert_approval_table()
