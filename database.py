@@ -25,7 +25,8 @@ def add_product(asin, name, color, display_order):
             display_order
         )
         VALUES (%s, %s, %s, %s)
-        ON CONFLICT (asin) DO NOTHING
+        ON CONFLICT (asin) DO UPDATE
+        SET display_order = EXCLUDED.display_order
     """, (asin, name, color, display_order))
 
     conn.commit()

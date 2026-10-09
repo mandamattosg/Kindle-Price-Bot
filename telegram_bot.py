@@ -167,29 +167,89 @@ def get_welcome_message(update: Update):
 # =========================
 
 def build_products_keyboard(prefix: str = "track_"):
-
     products = get_active_products()
-
     keyboard = []
+    products_by_name = {}
 
     for product in products:
+        products_by_name.setdefault(product[2], []).append(product)
 
-        product_id, asin, name, color = product
-
-        button_text = name
-
-        # só mostra cor no Kindle básico
-        if "Básico" in name and color:
-            button_text += f" — {color}"
+    for name, family_products in products_by_name.items():
+        if has_multiple_colors(family_products):
+            product_id = family_products[0][0]
+            button_text = name
+            callback_data = f"{prefix}family_{product_id}"
+        else:
+            product_id, _, _, color = family_products[0]
+            button_text = format_product_name(name, color)
+            callback_data = f"{prefix}{product_id}"
 
         keyboard.append([
             InlineKeyboardButton(
                 text=button_text,
-                callback_data=f"{prefix}{product_id}"
+                callback_data=callback_data
             )
         ])
 
     return InlineKeyboardMarkup(keyboard)
+
+
+def build_product_colors_keyboard(prefix: str, family_product_id: int):
+    products = get_active_products()
+    selected_product = next(
+        (product for product in products if product[0] == family_product_id),
+        None
+    )
+    if selected_product is None:
+        return None
+
+    family_name = selected_product[2]
+    family_products = [
+        product for product in products if product[2] == family_name
+    ]
+    if not has_multiple_colors(family_products):
+        return None
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text=format_product_name(name, color, include_color=True),
+                callback_data=f"{prefix}{product_id}"
+            )
+        ]
+        for product_id, _, name, color in family_products
+    ]
+    keyboard.append([
+        InlineKeyboardButton(
+            text="⬅️ Voltar",
+            callback_data=f"{prefix}back"
+        )
+    ])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def format_product_name(
+    name: str,
+    color: str | None,
+    include_color: bool = False
+):
+    if color and (include_color or "Básico" in name):
+        return f"{name} — {color}"
+    return name
+
+
+def has_multiple_colors(products):
+    return len({product[3] for product in products if product[3]}) > 1
+
+
+def get_multi_color_family_names(products):
+    products_by_name = {}
+    for product in products:
+        products_by_name.setdefault(product[2], []).append(product)
+    return {
+        name for name, family_products in products_by_name.items()
+        if has_multiple_colors(family_products)
+    }
 
 
 # =========================
@@ -301,7 +361,38 @@ async def manual_select_product(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return ConversationHandler.END
 
-    product_id = int(query.data.split("_")[1])
+    if query.data == "manual_back":
+        await query.edit_message_reply_markup(
+            reply_markup=build_products_keyboard(prefix="manual_")
+        )
+        return MANUAL_SELECT
+
+    if query.data.startswith("manual_family_"):
+        try:
+            family_product_id = int(query.data.removeprefix("manual_family_"))
+        except ValueError:
+            await query.message.reply_text("❌ Família de produtos inválida.")
+            return MANUAL_SELECT
+
+        reply_markup = build_product_colors_keyboard(
+            prefix="manual_",
+            family_product_id=family_product_id
+        )
+        if reply_markup is None:
+            await query.message.reply_text(
+                "❌ Família não encontrada ou sem variações ativas."
+            )
+            return MANUAL_SELECT
+
+        await query.edit_message_reply_markup(reply_markup=reply_markup)
+        return MANUAL_SELECT
+
+    try:
+        product_id = int(query.data.removeprefix("manual_"))
+    except ValueError:
+        await query.message.reply_text("❌ Produto inválido.")
+        return MANUAL_SELECT
+
     products = get_active_products()
     selected_product = next((p for p in products if p[0] == product_id), None)
 
@@ -1219,15 +1310,16 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message = "📊 Seus monitoramentos:\n\n"
     links_keyboard = []
+    multi_color_families = get_multi_color_family_names(get_active_products())
 
     for product in products:
 
         name, color, created_at, product_id, asin = product
-        display_name = name
-
-        # só mostra cor no Kindle básico
-        if "Básico" in display_name and color:
-            display_name += f" — {color}"
+        display_name = format_product_name(
+            name,
+            color,
+            include_color=name in multi_color_families
+        )
 
         affiliate_link = build_affiliate_link(asin)
         links_keyboard.append([
@@ -1307,18 +1399,17 @@ async def remover(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     keyboard = []
+    multi_color_families = get_multi_color_family_names(get_active_products())
 
     for product in products:
 
         name, color, created_at, product_id, asin = product
 
-        # só mostra cor no Kindle básico
-        if "Básico" in name and color:
-            name += f" — {color}"
-
-        button_text = name
-
-       
+        button_text = format_product_name(
+            name,
+            color,
+            include_color=name in multi_color_families
+        )
 
         keyboard.append([
             InlineKeyboardButton(
@@ -1370,6 +1461,32 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     data = query.data
+
+    if data == "track_back":
+        await query.edit_message_reply_markup(
+            reply_markup=build_products_keyboard()
+        )
+        return
+
+    if data.startswith("track_family_"):
+        try:
+            family_product_id = int(data.removeprefix("track_family_"))
+        except ValueError:
+            await query.message.reply_text("❌ Família de produtos inválida.")
+            return
+
+        reply_markup = build_product_colors_keyboard(
+            prefix="track_",
+            family_product_id=family_product_id
+        )
+        if reply_markup is None:
+            await query.message.reply_text(
+                "❌ Família não encontrada ou sem variações ativas."
+            )
+            return
+
+        await query.edit_message_reply_markup(reply_markup=reply_markup)
+        return
 
     # =========================
     # APROVACAO DE PROMOCAO (ADMIN)
@@ -1472,6 +1589,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         _, _, product_name, color = selected_product
+        is_multi_color_family = has_multiple_colors(
+            [product for product in products if product[2] == product_name]
+        )
+        product_name = format_product_name(
+            product_name,
+            color,
+            include_color=is_multi_color_family
+        )
 
         was_added = add_user_product(telegram_id, product_id)
 
@@ -1526,9 +1651,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 target_users=[(internal_user_id, telegram_id)]
             )
 
-        if "Básico" in product_name and color:
-            product_name += f" — {color}"
-
         await query.message.reply_text(
             f"✅ Beleza! Vou te avisar quando o preço do "
             f"{product_name} baixar. Enquanto isso, você pode acompanhar o preço atual usando o comando /status.\n\n"
@@ -1570,8 +1692,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             product_id
         )
 
-        if "Básico" in name and color:
-            name += f" — {color}"
+        name = format_product_name(name, color)
 
         await query.message.reply_text(
             f"🗑️ Monitoramento removido:\n{name}"
