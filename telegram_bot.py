@@ -238,6 +238,46 @@ def format_product_name(
     return name
 
 
+async def handle_family_navigation(query, prefix: str) -> bool:
+    """Trata os callbacks de voltar/abrir família; retorna True se tratou."""
+    if query.data == f"{prefix}back":
+        await query.edit_message_reply_markup(
+            reply_markup=build_products_keyboard(prefix=prefix)
+        )
+        return True
+
+    if query.data.startswith(f"{prefix}family_"):
+        try:
+            family_product_id = int(query.data.removeprefix(f"{prefix}family_"))
+        except ValueError:
+            await query.message.reply_text("❌ Família de produtos inválida.")
+            return True
+
+        reply_markup = build_product_colors_keyboard(
+            prefix=prefix,
+            family_product_id=family_product_id
+        )
+        if reply_markup is None:
+            await query.message.reply_text(
+                "❌ Família não encontrada ou sem variações ativas."
+            )
+            return True
+
+        await query.edit_message_reply_markup(reply_markup=reply_markup)
+        return True
+
+    return False
+
+
+def format_selected_product_name(product, products):
+    _pid, _asin, name, color = product
+    return format_product_name(
+        name,
+        color,
+        include_color=has_multiple_colors([p for p in products if p[2] == name])
+    )
+
+
 def has_multiple_colors(products):
     return len({product[3] for product in products if product[3]}) > 1
 
@@ -724,20 +764,24 @@ async def lembrete_select_product(update: Update, context: ContextTypes.DEFAULT_
         await query.message.reply_text("❌ Seleção inválida.")
         return ConversationHandler.END
 
+    if await handle_family_navigation(query, "reminder_"):
+        return REMINDER_SELECT
+
     try:
-        product_id = int(query.data.split("_")[1])
+        product_id = int(query.data.removeprefix("reminder_"))
     except (TypeError, ValueError):
         await query.message.reply_text("❌ Produto inválido.")
         return ConversationHandler.END
 
-    product = next((p for p in get_active_products() if p[0] == product_id), None)
+    products = get_active_products()
+    product = next((p for p in products if p[0] == product_id), None)
     if not product:
         await query.message.reply_text("❌ Produto não encontrado.")
         return ConversationHandler.END
 
-    _pid, asin, name, color = product
+    _pid, asin, _name, _color = product
     context.user_data["reminder_product_id"] = product_id
-    context.user_data["reminder_product_name"] = _build_product_display_name(name, color)
+    context.user_data["reminder_product_name"] = format_selected_product_name(product, products)
     context.user_data["reminder_button_url"] = build_affiliate_link(asin)
 
     await query.message.reply_text(
@@ -1136,19 +1180,22 @@ async def encerrar_oferta_select_product(update: Update, context: ContextTypes.D
         await query.message.reply_text("❌ Seleção inválida.")
         return ConversationHandler.END
 
+    if await handle_family_navigation(query, "endpromo_"):
+        return PROMO_END_SELECT
+
     try:
-        product_id = int(query.data.split("_")[1])
+        product_id = int(query.data.removeprefix("endpromo_"))
     except (TypeError, ValueError):
         await query.message.reply_text("❌ Produto inválido.")
         return ConversationHandler.END
 
-    product = next((p for p in get_active_products() if p[0] == product_id), None)
+    products = get_active_products()
+    product = next((p for p in products if p[0] == product_id), None)
     if not product:
         await query.message.reply_text("❌ Produto não encontrado.")
         return ConversationHandler.END
 
-    _pid, _asin, name, color = product
-    product_name = _build_product_display_name(name, color)
+    product_name = format_selected_product_name(product, products)
 
     promotion_state = get_active_product_promotion_state(
         product_id,
