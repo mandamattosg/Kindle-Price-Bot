@@ -25,3 +25,6 @@ venv-kindle/
 images/
 *.json
 *.db
+
+# imagens do README
+!assets/logo.png

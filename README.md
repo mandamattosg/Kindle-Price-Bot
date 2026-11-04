@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Kindle Bot" width="260">
+</p>
+
 # Kindle Price Bot
 
 Bot do Telegram que monitora o preço dos Kindles na Amazon Brasil e avisa os usuários quando o preço cai.
