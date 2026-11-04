@@ -8,6 +8,9 @@ Guia_Completo_Kidle.pdf
 tmp.py
 session/
 proximos_passos.txt
+load_test_notifications.py
+products_data.sql
+tests/
 # pycache
 __pycache__/
 *.pyc
