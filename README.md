@@ -6,6 +6,8 @@
 
 Bot do Telegram que monitora o preço dos Kindles na Amazon Brasil e avisa os usuários quando o preço cai.
 
+Teste aqui: https://t.me/kindlebymands_bot
+
 ## Sobre esta versão
 
 Este repositório é uma **versão enxuta e pública** do projeto, mantida apenas para **fins de portfólio e consulta**.
